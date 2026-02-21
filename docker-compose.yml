@@ -1,0 +1,20 @@
+services:
+  # ── butler-core ──────────────────────────────────────────────────────────────
+  butler-core:
+    build: .
+    container_name: butler-core
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "3000:3000"
+    networks:
+      - proxynet
+
+# ── Network ───────────────────────────────────────────────────────────────────
+# proxynet is the existing Unraid bridge network created by NginxProxyManager.
+# Speaches must also be on proxynet — then butler-core can reach it via hostname.
+# Home Assistant (RPi) and Ollama (home server) are on the LAN and reached by IP
+# — they don't need to be on proxynet.
+networks:
+  proxynet:
+    external: true
