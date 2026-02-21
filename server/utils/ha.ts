@@ -25,8 +25,8 @@ async function haFetch<T>(path: string, options?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '(no body)')
-    throw new Error(`HA API ${response.status} on ${path}: ${text}`)
+    const errBody = await response.text().catch(() => '(no body)')
+    throw new Error(`HA API ${response.status} on ${path}: ${errBody}`)
   }
 
   return response.json() as Promise<T>
@@ -61,8 +61,8 @@ export async function getEntityAreas(): Promise<Record<string, string>> {
   })
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '(no body)')
-    throw new Error(`HA template API ${response.status}: ${text}`)
+    const errBody = await response.text().catch(() => '(no body)')
+    throw new Error(`HA template API ${response.status}: ${errBody}`)
   }
 
   const items = JSON.parse(await response.text()) as Array<{ e: string; a: string }>

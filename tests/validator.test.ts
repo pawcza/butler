@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 vi.mock('../server/utils/registry', () => ({
   isValidTool: (name: string) => ['turn_on_light', 'turn_off_light', 'set_temperature'].includes(name),

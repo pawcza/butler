@@ -74,18 +74,25 @@ export function useVoice() {
   }
 
   async function startRecording(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    audioChunks = []
-    mediaRecorder = new MediaRecorder(stream)
-    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
-    mediaRecorder.start()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      audioChunks = []
+      mediaRecorder = new MediaRecorder(stream)
+      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
+      mediaRecorder.start()
+    } catch (err) {
+      error.value = `Microphone access denied: ${err instanceof Error ? err.message : err}`
+      setTimeout(() => { error.value = null }, 5000)
+    }
   }
 
   function stopRecording(): void {
     if (!mediaRecorder || !ws) return
+    const currentWs = ws
     mediaRecorder.onstop = async () => {
+      if (!currentWs) return
       const blob = new Blob(audioChunks, { type: 'audio/webm' })
-      ws!.send(await blob.arrayBuffer())
+      currentWs.send(await blob.arrayBuffer())
     }
     mediaRecorder.stop()
     mediaRecorder.stream.getTracks().forEach((t) => t.stop())

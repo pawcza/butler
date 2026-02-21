@@ -2,7 +2,7 @@ import type { ClientMessage, ServerEvent } from '~/shared/types'
 
 const sessions = new Map<string, SessionManager>()
 
-function send(peer: { send: (data: string) => void }, event: ServerEvent | { type: 'pong' }): void {
+function send(peer: { send: (data: string) => void }, event: ServerEvent): void {
   peer.send(JSON.stringify(event))
 }
 

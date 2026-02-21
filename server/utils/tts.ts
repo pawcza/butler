@@ -14,8 +14,8 @@ export async function synthesize(text: string): Promise<Buffer> {
   })
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '(no body)')
-    throw new Error(`TTS ${response.status}: ${text}`)
+    const errBody = await response.text().catch(() => '(no body)')
+    throw new Error(`TTS ${response.status}: ${errBody}`)
   }
 
   return Buffer.from(await response.arrayBuffer())
