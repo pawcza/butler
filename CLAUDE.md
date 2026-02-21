@@ -5,91 +5,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-npm run dev          # tsx watch — hot-reload, no compile step
-npm run build        # tsup → dist/index.js (ESM, node22 target)
-npm run start        # run the compiled dist/index.js
-npm run type-check   # tsc --noEmit (no tests exist; this is the verification step)
-npm run lint         # eslint src
-npm run format       # prettier --write src
+pnpm dev          # Nuxt dev server with HMR (frontend + backend)
+pnpm build        # Build for production → .output/
+pnpm start        # Run production build: node .output/server/index.mjs
+pnpm type-check   # nuxt typecheck (runs vue-tsc on the full project)
+pnpm test         # vitest run (unit tests in tests/)
+pnpm test:watch   # vitest watch mode
 ```
-
-There are no tests. `type-check` + manual `POST /command` calls are the primary verification tools.
 
 ## Architecture
 
-### Request flow
+Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles frontend.
 
-Two entry points, both feed the same pipeline:
+- `server/utils/` — backend logic (Nitro auto-imports these; no explicit imports needed in server files)
+- `server/api/` — REST endpoints (file-based routing: `health.get.ts` → GET /api/health)
+- `server/routes/ws.ts` — WebSocket handler at /ws (Nitro native crossws)
+- `server/plugins/startup.ts` — runs buildRegistry() at server start
+- `pages/` — Vue pages (index.vue = voice interface, entities.vue = entity manager)
+- `components/` — auto-imported Vue components
+- `composables/` — auto-imported Vue composables
+- `shared/types.ts` — TypeScript types shared between frontend and backend
 
-1. **WebSocket** (binary frame) → `ws/server.ts` → `processAudio()` → STT → `processCommand()`
-2. **REST** `POST /command` → `routes/command.ts` → `processCommand()` (skips STT)
+## Key architectural rules
 
-`processCommand()` in `pipeline/index.ts`:
-```
-LLM (Ollama) → validate() → execute() or speak plain text → TTS (Speaches) → audio out
-```
-
-### Pipeline stages (`src/pipeline/`)
-
-| File | Role |
-|------|------|
-| `stt.ts` | POST audio to Speaches `/v1/audio/transcriptions` |
-| `llm.ts` | POST to Ollama (non-streaming, returns raw string) |
-| `validator.ts` | Extract JSON from LLM output, validate tool names + entity IDs against registry |
-| `executor.ts` | Map tool names → HA domain/service, call HA API sequentially, never throws |
-| `tts.ts` | POST text to Speaches `/v1/audio/speech`, returns audio Buffer |
-
-### Key design rules (from DECISIONS.md)
-
-- **Registry validation before execution**: `validator.ts` rejects hallucinated entity IDs / tool names before the executor ever runs. HA is never called with garbage.
-- **System prompt rebuilt per call**: `buildSystemPrompt(registry)` is called every LLM invocation so `POST /registry/refresh` takes effect immediately without restart.
-- **No streaming**: Ollama called with `stream: false` — partial JSON validation is impossible.
-- **IDLE guard**: WebSocket handler rejects new audio if session state ≠ `IDLE`. No queue. User must wait.
-- **Conversation history cap**: 20 messages (10 exchanges) per session, then oldest pair is dropped.
-
-### Session state machine
-
-`IDLE → LISTENING → THINKING → EXECUTING → SPEAKING → IDLE`
-
-`SessionManager` (`src/session/manager.ts`) is one instance per WebSocket connection, scoped to that connection's lifetime.
-
-### Tool registry (`src/ha/toolRegistry.ts`)
-
-- Module-level singleton `registry` (`{ tools, entities }`)
-- `buildRegistry()` fetches all HA states + area names, filters to `SUPPORTED_DOMAINS` (`light`, `cover`, `climate`, `scene`, `switch`), and populates it
-- Entity field is `entityId` (camelCase) in `Entity` interface; `entity_id` (snake_case) is HA's wire format
-- Adding a new HA capability requires: adding to `TOOL_DEFINITIONS`, `SUPPORTED_DOMAINS`, and `TOOL_SERVICE_MAP` in `executor.ts`
-
-### REST endpoints
-
-| Route | Purpose |
-|-------|---------|
-| `GET /health` | Liveness probe |
-| `GET /registry` | Dump current tool/entity registry as JSON |
-| `POST /registry/refresh` | Re-fetch from HA and rebuild registry (no restart needed) |
-| `POST /command` | Text-only pipeline — body: `{ text: string }` — returns `{ events: PipelineEvent[] }` |
-| `GET /` | Static UI from `public/` directory |
+- Nitro auto-imports everything in `server/utils/` — no import statements needed between server files
+- `server/utils/config.ts` validates env vars with Zod at module load time; exits process on failure
+- Entity interactability is stored in `data/entities.json` (gitignored); defaults to interactable: true for new entities
+- Only interactable entities reach the LLM system prompt — non-interactable ones cannot be called even if hallucinated
+- WebSocket IDLE guard: binary audio frames rejected if session state ≠ IDLE (no queue, user must wait)
+- System prompt is rebuilt on every LLM call so POST /api/entities/refresh takes effect immediately
 
 ## TypeScript strictness
 
-`tsconfig.json` has `exactOptionalPropertyTypes: true` and `noUncheckedIndexedAccess: true`. Consequences:
-- Never pass `undefined` for optional fields — omit the key entirely (use conditional spread `...(val !== undefined ? { key: val } : {})`)
-- Fastify server must be typed as `Fastify<Server, IncomingMessage, ServerResponse>` to avoid Http2SecureServer union conflict
-- WebSocket `data` in `on('message')` is `Buffer | ArrayBuffer | Buffer[]` — handle all three with if/else
+`nuxt.config.ts` enables: `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`.
+
+- Never pass `undefined` for optional fields — omit the key with conditional spread `...(val !== undefined ? { key: val } : {})`
+- All array/record access must be null-checked (noUncheckedIndexedAccess)
+- Entity field is `entityId` (camelCase) in shared types; `entity_id` (snake_case) is HA's wire format only
 
 ## Environment variables
 
-Required at startup (Zod fails fast with clear messages if missing):
-- `HA_URL`, `HA_TOKEN` — Home Assistant
-- `OLLAMA_URL`, `OLLAMA_MODEL` (default: `qwen2.5:7b`)
-- `WHISPER_URL`, `WHISPER_MODEL` (default: `whisper-1`) — STT via Speaches
-- `PIPER_URL`, `PIPER_MODEL`, `PIPER_VOICE`, `PIPER_RESPONSE_FORMAT` (`mp3`|`wav`) — TTS via Speaches
+All read from process.env by `server/utils/config.ts`. Nuxt loads `.env` automatically in dev.
 
-`WHISPER_URL` and `PIPER_URL` both point to the same Speaches instance. Kept separate to allow splitting later.
-
-## Docker / network
-
-- `docker-compose.yml` uses `proxynet` (Unraid's NginxProxyManager bridge, `external: true`)
-- butler-core ↔ Speaches: Docker hostname (`speaches:8000`)
-- butler-core ↔ HA (RPi) and Ollama (home server PC): plain LAN IPs
-- Build: `Dockerfile` → `dist/index.js` via tsup; `public/` is copied in
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `HA_URL` | — | Home Assistant base URL |
+| `HA_TOKEN` | — | HA long-lived access token |
+| `OLLAMA_URL` | — | Ollama base URL |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | LLM model |
+| `WHISPER_URL` | — | Speaches URL (STT) |
+| `WHISPER_MODEL` | `whisper-1` | STT model |
+| `PIPER_URL` | — | Speaches URL (TTS) |
+| `PIPER_MODEL` | `Stoned-Code/piper-en_US-glados-medium` | TTS model |
+| `PIPER_VOICE` | `glados` | TTS voice |
+| `PIPER_RESPONSE_FORMAT` | `mp3` | Audio output format (`mp3` or `wav`) |
