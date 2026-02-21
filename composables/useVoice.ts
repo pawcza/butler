@@ -48,6 +48,7 @@ export function useVoice() {
         if (pendingTranscript) {
           exchanges.value.push({ heard: pendingTranscript, reply: event.text })
           pendingTranscript = ''
+          currentTranscript.value = ''
         }
         break
       case 'audio':
