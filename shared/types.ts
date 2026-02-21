@@ -1,3 +1,5 @@
+/** Shared types for the butler-core WebSocket event contract, HA entity/tool registry, and session state. Imported by both server (Nitro) and client (Vue). */
+
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
 export interface Tool {
@@ -31,6 +33,7 @@ export type ServerEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'transcript'; text: string }
   | { type: 'response'; text: string }
+  /** data is a base64-encoded audio buffer; decode with atob() on the client */
   | { type: 'audio'; data: string; format: 'mp3' | 'wav' }
   | { type: 'error'; message: string }
   | { type: 'pong' }
