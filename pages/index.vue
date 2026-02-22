@@ -39,13 +39,17 @@ watch([exchanges, currentTranscript], async () => {
   if (transcriptEl.value) transcriptEl.value.scrollTop = transcriptEl.value.scrollHeight
 }, { deep: true })
 
+// Local isRecording (before server responds) maps to 'LISTENING'.
+// Server LISTENING means STT is running — labelled separately to avoid confusion.
 const stateLabel: Record<string, string> = {
   IDLE: 'Hold to speak',
-  LISTENING: 'Listening…',
+  LISTENING: 'Transcribing…',
   THINKING: 'Processing…',
   EXECUTING: 'Executing…',
   SPEAKING: 'Speaking…',
 }
+
+const recordingLabel = 'Listening…'
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
@@ -150,7 +154,7 @@ function tickStyle(i: number): Record<string, string> {
         class="text-[9px] font-mono tracking-[0.2em] uppercase transition-colors duration-500"
         :class="stateLabelClass"
       >
-        {{ stateLabel[activeState] ?? activeState }}
+        {{ isRecording ? recordingLabel : (stateLabel[activeState] ?? activeState) }}
       </span>
     </div>
 
