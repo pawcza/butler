@@ -15,4 +15,9 @@ export default defineNuxtConfig({
   nitro: {
     experimental: { websocket: true },
   },
+  vite: {
+    optimizeDeps: {
+      exclude: ['@ricky0123/vad-web', 'onnxruntime-web'],
+    },
+  },
 })
