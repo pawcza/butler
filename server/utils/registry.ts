@@ -75,10 +75,11 @@ export async function buildRegistry(): Promise<void> {
   }
 
   const deviceConfig = readDeviceConfig()
-  const updatedConfig: DeviceConfig = { ...deviceConfig }
+  const updatedConfig: DeviceConfig = {}
   const devices: Device[] = []
 
   for (const haDevice of haDevices) {
+    if (haDevice.disabled_by !== null) continue
     const entities = entitiesByDevice.get(haDevice.id)
     if (!entities || entities.length === 0) continue
 
@@ -87,9 +88,7 @@ export async function buildRegistry(): Promise<void> {
     // Default: interactable if the device has an area
     const interactable = existing?.interactable ?? (haDevice.area_id != null && haDevice.area_id !== '')
 
-    if (!(haDevice.id in updatedConfig)) {
-      updatedConfig[haDevice.id] = { interactable }
-    }
+    updatedConfig[haDevice.id] = { interactable }
 
     devices.push({
       deviceId: haDevice.id,
@@ -125,10 +124,12 @@ export function getInteractableRegistry(): ToolRegistry {
 
 /** Persists the interactable flag for one device and updates the in-memory registry. */
 export function setDeviceInteractable(deviceId: string, interactable: boolean): boolean {
-  const device = registry.devices.find((d) => d.deviceId === deviceId)
-  if (!device) return false
+  const idx = registry.devices.findIndex((d) => d.deviceId === deviceId)
+  if (idx === -1) return false
 
-  device.interactable = interactable
+  registry.devices = registry.devices.map((d) =>
+    d.deviceId === deviceId ? { ...d, interactable } : d,
+  )
 
   const cfg = readDeviceConfig()
   cfg[deviceId] = { interactable }
