@@ -105,36 +105,8 @@ function tickStyle(i: number): Record<string, string> {
       </div>
     </Transition>
 
-    <!-- Transcript -->
-    <div ref="transcriptEl" class="flex-1 min-h-0 overflow-y-auto px-6 py-3 space-y-4">
-      <div
-        v-if="exchanges.length === 0 && !currentTranscript"
-        class="h-full flex items-end justify-center pb-2"
-      >
-        <p class="text-[9px] font-mono tracking-[0.2em] uppercase text-ap-muted/30">
-          Aperture Science Domestic Assistance Android
-        </p>
-      </div>
-
-      <div v-for="(ex, i) in exchanges" :key="i" class="space-y-1">
-        <div class="flex gap-3 items-baseline">
-          <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
-          <span class="text-sm font-mono text-ap-blue/80">{{ ex.heard }}</span>
-        </div>
-        <div class="flex gap-3 items-baseline">
-          <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-orange">GLaDOS</span>
-          <span class="text-sm font-mono text-gray-300">{{ ex.reply }}</span>
-        </div>
-      </div>
-
-      <div v-if="currentTranscript" class="flex gap-3 items-baseline opacity-40">
-        <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
-        <span class="text-sm font-mono text-ap-blue italic">{{ currentTranscript }}</span>
-      </div>
-    </div>
-
-    <!-- GLaDOS Entity -->
-    <div class="shrink-0 flex flex-col items-center py-6 gap-3">
+    <!-- GLaDOS Entity — centered in remaining space -->
+    <div class="flex-1 flex flex-col items-center justify-center gap-3">
       <button
         class="glados-entity"
         :class="`state-${activeState.toLowerCase()}`"
@@ -180,6 +152,37 @@ function tickStyle(i: number): Record<string, string> {
       >
         {{ stateLabel[activeState] ?? activeState }}
       </span>
+    </div>
+
+    <!-- Transcript — bottom, scrollable, capped height -->
+    <div
+      ref="transcriptEl"
+      class="shrink-0 max-h-[28vh] overflow-y-auto px-6 py-3 space-y-3 border-t border-ap-border/40"
+    >
+      <div
+        v-if="exchanges.length === 0 && !currentTranscript"
+        class="flex justify-center"
+      >
+        <p class="text-[9px] font-mono tracking-[0.2em] uppercase text-ap-muted/30">
+          Aperture Science Domestic Assistance Android
+        </p>
+      </div>
+
+      <div v-for="(ex, i) in exchanges" :key="i" class="space-y-1">
+        <div class="flex gap-3 items-baseline">
+          <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
+          <span class="text-sm font-mono text-ap-blue/80">{{ ex.heard }}</span>
+        </div>
+        <div class="flex gap-3 items-baseline">
+          <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-orange">GLaDOS</span>
+          <span class="text-sm font-mono text-gray-300">{{ ex.reply }}</span>
+        </div>
+      </div>
+
+      <div v-if="currentTranscript" class="flex gap-3 items-baseline opacity-40">
+        <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
+        <span class="text-sm font-mono text-ap-blue italic">{{ currentTranscript }}</span>
+      </div>
     </div>
   </div>
 </template>
