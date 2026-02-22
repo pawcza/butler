@@ -53,7 +53,12 @@ export default defineWebSocketHandler({
         send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
         return
       }
-      void processCommand(parsed.text, session, (event) => send(peer, event))
+      console.log('[ws] text command:', JSON.stringify(parsed.text))
+      processCommand(parsed.text, session, (event) => send(peer, event)).catch((err) => {
+        console.error('[ws] processCommand threw:', err)
+        send(peer, { type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
+        session.setState('IDLE')
+      })
     }
   },
 
