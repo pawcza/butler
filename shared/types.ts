@@ -1,4 +1,4 @@
-/** Shared types for the butler-core WebSocket event contract, HA entity/tool registry, and session state. Imported by both server (Nitro) and client (Vue). */
+/** Shared types for the butler-core WebSocket event contract, HA device/tool registry, and session state. Imported by both server (Nitro) and client (Vue). */
 
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
@@ -9,18 +9,28 @@ export interface Tool {
   service: string
 }
 
-export interface Entity {
+/** A single controllable entity belonging to a Device. */
+export interface ControlEntity {
   entityId: string
   domain: string
-  friendlyName: string
   state: string
-  area?: string
+  friendlyName: string
+}
+
+/** A physical HA device with its controllable entities and interactability flag. */
+export interface Device {
+  deviceId: string
+  name: string
+  area: string            // resolved area name; empty string if device has no area
+  manufacturer?: string
+  model?: string
+  entities: ControlEntity[]
   interactable: boolean
 }
 
 export interface ToolRegistry {
   tools: Tool[]
-  entities: Entity[]
+  devices: Device[]
 }
 
 export interface Message {
