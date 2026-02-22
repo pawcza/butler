@@ -21,7 +21,7 @@ Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles fro
 - `server/api/` — REST endpoints (file-based routing: `health.get.ts` → GET /api/health)
 - `server/routes/ws.ts` — WebSocket handler at /ws (Nitro native crossws)
 - `server/plugins/startup.ts` — runs buildRegistry() at server start
-- `pages/` — Vue pages (index.vue = voice interface, entities.vue = entity manager)
+- `pages/` — Vue pages (index.vue = voice interface, devices.vue = device manager)
 - `components/` — auto-imported Vue components
 - `composables/` — auto-imported Vue composables
 - `shared/types.ts` — TypeScript types shared between frontend and backend
@@ -30,10 +30,10 @@ Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles fro
 
 - Nitro auto-imports everything in `server/utils/` — no import statements needed between server files
 - `server/utils/config.ts` validates env vars with Zod at module load time; exits process on failure
-- Entity interactability is stored in `data/entities.json` (gitignored); defaults to interactable: true for new entities
+- Device interactability is stored in `data/devices.json` (gitignored); defaults to `true` if the device has an assigned area, `false` otherwise
 - Only interactable entities reach the LLM system prompt — non-interactable ones cannot be called even if hallucinated
 - WebSocket IDLE guard: binary audio frames rejected if session state ≠ IDLE (no queue, user must wait)
-- System prompt is rebuilt on every LLM call so POST /api/entities/refresh takes effect immediately
+- System prompt is rebuilt on every LLM call so POST /api/devices/refresh takes effect immediately
 
 ## TypeScript strictness
 
