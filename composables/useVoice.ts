@@ -242,6 +242,7 @@ export function useVoice() {
         baseAssetPath: '/_vad/',
         onnxWASMBasePath: '/_vad/',
         model: 'v5',
+        minSpeechFrames: 1,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
         onSpeechEnd: (audio: Float32Array) => {
