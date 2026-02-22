@@ -60,6 +60,7 @@ export function useVoice() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let vad: any = null
   let vadPhase: 'passive' | 'active' = 'passive'
+  let wakeCheckInFlight = false
   let minWindowElapsed = false
   let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
   let minWindowTimer: ReturnType<typeof setTimeout> | null = null
@@ -130,6 +131,7 @@ export function useVoice() {
   // ── Manual recording ─────────────────────────────────────────────────────────
 
   async function startRecording(): Promise<void> {
+    if (mediaRecorder?.state === 'recording') return
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       audioChunks = []
@@ -158,7 +160,13 @@ export function useVoice() {
 
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
     if (vadPhase === 'passive') {
-      await checkWakeWord(audio)
+      if (wakeCheckInFlight) return
+      wakeCheckInFlight = true
+      try {
+        await checkWakeWord(audio)
+      } finally {
+        wakeCheckInFlight = false
+      }
     } else if (vadPhase === 'active' && minWindowElapsed) {
       triggerActiveStop()
     }
