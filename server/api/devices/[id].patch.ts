@@ -16,9 +16,10 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, message: 'Body must be { interactable: boolean }' })
   }
 
-  const updated = setDeviceInteractable(decodeURIComponent(deviceId), parsed.data.interactable)
+  const decodedId = decodeURIComponent(deviceId)
+  const updated = setDeviceInteractable(decodedId, parsed.data.interactable)
   if (!updated) {
-    throw createError({ statusCode: 404, message: `Device not found: ${deviceId}` })
+    throw createError({ statusCode: 404, message: `Device not found: ${decodedId}` })
   }
 
   return { ok: true }
