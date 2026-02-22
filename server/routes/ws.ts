@@ -8,6 +8,7 @@ function send(peer: { send: (data: string) => void }, event: ServerEvent): void 
 
 export default defineWebSocketHandler({
   open(peer) {
+    console.log('[ws] peer opened:', peer.id)
     const session = new SessionManager((state) => {
       send(peer, { type: 'state', state })
     })
@@ -16,8 +17,12 @@ export default defineWebSocketHandler({
   },
 
   async message(peer, msg) {
+    console.log('[ws] message handler, peer:', peer.id, '| sessions size:', sessions.size, '| rawData type:', typeof msg.rawData, '| isBuffer:', Buffer.isBuffer(msg.rawData))
     const session = sessions.get(peer.id)
-    if (!session) return
+    if (!session) {
+      console.log('[ws] no session for peer:', peer.id)
+      return
+    }
 
     const raw = msg.rawData
 
