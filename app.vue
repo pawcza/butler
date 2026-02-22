@@ -10,11 +10,11 @@
         Voice
       </NuxtLink>
       <NuxtLink
-        to="/entities"
+        to="/devices"
         class="text-sm text-gray-400 hover:text-white transition-colors"
         active-class="text-white"
       >
-        Entities
+        Devices
       </NuxtLink>
     </nav>
     <NuxtPage />
