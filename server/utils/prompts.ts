@@ -2,10 +2,15 @@ import type { ToolRegistry } from '~/shared/types'
 
 export function buildSystemPrompt(registry: ToolRegistry): string {
   const toolList = registry.tools.map((t) => `  - ${t.name}: ${t.description}`).join('\n')
+
   const entityList =
-    registry.entities.length > 0
-      ? registry.entities
-          .map((e) => `  - ${e.entityId} [${e.domain}] "${e.friendlyName}" (${e.state})`)
+    registry.devices.length > 0
+      ? registry.devices
+          .flatMap((d) =>
+            d.entities.map(
+              (e) => `  - ${e.entityId} [${e.domain}] "${e.friendlyName}" (${e.state}) [${d.name}, ${d.area}]`,
+            ),
+          )
           .join('\n')
       : '  (none — HA may be unreachable)'
 
