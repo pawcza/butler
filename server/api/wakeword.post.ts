@@ -6,6 +6,14 @@ export default defineEventHandler(async (event) => {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer())
-  const heard = await transcribe(buffer, 'wav')
+  let heard: string
+  try {
+    heard = await transcribe(buffer, 'wav')
+  } catch (err) {
+    throw createError({
+      statusCode: 502,
+      message: err instanceof Error ? err.message : 'STT service unavailable',
+    })
+  }
   return { heard }
 })
