@@ -5,9 +5,9 @@ const bodySchema = z.object({
 })
 
 export default defineEventHandler(async (event) => {
-  const entityId = getRouterParam(event, 'id')
-  if (!entityId) {
-    throw createError({ statusCode: 400, message: 'Missing entity id' })
+  const deviceId = getRouterParam(event, 'id')
+  if (!deviceId) {
+    throw createError({ statusCode: 400, message: 'Missing device id' })
   }
 
   const body = await readBody(event)
@@ -16,9 +16,9 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, message: 'Body must be { interactable: boolean }' })
   }
 
-  const updated = setEntityInteractable(decodeURIComponent(entityId), parsed.data.interactable)
+  const updated = setDeviceInteractable(decodeURIComponent(deviceId), parsed.data.interactable)
   if (!updated) {
-    throw createError({ statusCode: 404, message: `Entity not found: ${entityId}` })
+    throw createError({ statusCode: 404, message: `Device not found: ${deviceId}` })
   }
 
   return { ok: true }

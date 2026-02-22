@@ -1,3 +1,3 @@
 export default defineEventHandler(() => {
-  return getRegistry().entities
+  return getRegistry().devices
 })
