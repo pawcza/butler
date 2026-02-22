@@ -52,3 +52,4 @@ export type ServerEvent =
 export type ClientMessage =
   | { type: 'ping' }
   | { type: 'clear_history' }
+  | { type: 'command'; text: string }

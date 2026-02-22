@@ -162,9 +162,9 @@ export function useVoice() {
   // ── Passive VAD + wake word ───────────────────────────────────────────────────
 
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
-    console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight)
+    console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight, '| state:', state.value)
     if (vadPhase === 'passive') {
-      if (wakeCheckInFlight) return
+      if (wakeCheckInFlight || state.value !== 'IDLE') return
       wakeCheckInFlight = true
       try {
         await checkWakeWord(audio)
@@ -189,7 +189,22 @@ export function useVoice() {
         body: form,
       })
       console.log('[vad] heard:', JSON.stringify(result.heard))
-      if (result.heard.toLowerCase().includes('home')) {
+
+      const lower = result.heard.toLowerCase()
+      const wakeIdx = lower.indexOf('home')
+      if (wakeIdx === -1) return
+
+      // Extract everything after the wake word, stripping leading punctuation/spaces
+      const commandText = result.heard.slice(wakeIdx + 'home'.length).replace(/^[,.\s!?]+/, '').trim()
+      console.log('[vad] command text:', JSON.stringify(commandText))
+
+      playAckSound()
+
+      if (commandText.length > 2) {
+        // Alexa-style: command is in the same utterance — send directly to pipeline
+        ws?.send(JSON.stringify({ type: 'command', text: commandText }))
+      } else {
+        // Bare wake word — open active listening window
         await triggerActiveStart()
       }
     } catch (err) {

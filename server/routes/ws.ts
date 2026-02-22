@@ -48,6 +48,12 @@ export default defineWebSocketHandler({
       send(peer, { type: 'pong' })
     } else if (parsed.type === 'clear_history') {
       session.clearHistory()
+    } else if (parsed.type === 'command') {
+      if (session.getState() !== 'IDLE') {
+        send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
+        return
+      }
+      void processCommand(parsed.text, session, (event) => send(peer, event))
     }
   },
 
