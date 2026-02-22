@@ -145,7 +145,7 @@ export function useVoice() {
   }
 
   function stopRecording(): void {
-    if (!mediaRecorder || !ws) return
+    if (!mediaRecorder || mediaRecorder.state === 'inactive' || !ws) return
     const currentWs = ws
     mediaRecorder.onstop = async () => {
       if (!currentWs) return
@@ -195,6 +195,7 @@ export function useVoice() {
     vadPhase = 'active'
     minWindowElapsed = false
 
+    if (vad) vad.pause()
     playAckSound()
     await startRecording()
 
@@ -222,6 +223,7 @@ export function useVoice() {
     }
 
     stopRecording()
+    if (vad) vad.start()
   }
 
   async function startPassiveListening(): Promise<void> {
