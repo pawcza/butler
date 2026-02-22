@@ -8,7 +8,7 @@ export function buildSystemPrompt(registry: ToolRegistry): string {
       ? registry.devices
           .flatMap((d) =>
             d.entities.map(
-              (e) => `  - ${e.entityId} [${e.domain}] "${e.friendlyName}" (${e.state}) [${d.name}, ${d.area}]`,
+              (e) => `  - ${e.entityId} [${e.domain}] "${e.friendlyName}" (${e.state}) [${d.name}${d.area ? `, ${d.area}` : ''}]`,
             ),
           )
           .join('\n')
