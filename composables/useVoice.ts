@@ -5,6 +5,40 @@ export interface Exchange {
   reply: string
 }
 
+/** Convert Silero VAD Float32Array (16kHz mono) to 16-bit PCM WAV ArrayBuffer. */
+function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
+  const numChannels = 1
+  const bitsPerSample = 16
+  const dataSize = samples.length * 2
+  const buffer = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buffer)
+
+  function writeStr(offset: number, str: string): void {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
+  }
+
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)                                               // PCM
+  view.setUint16(22, numChannels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, (sampleRate * numChannels * bitsPerSample) / 8, true) // byte rate
+  view.setUint16(32, (numChannels * bitsPerSample) / 8, true)              // block align
+  view.setUint16(34, bitsPerSample, true)
+  writeStr(36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i] ?? 0))
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true)
+  }
+
+  return buffer
+}
+
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
   const isConnected = ref(false)
@@ -12,11 +46,25 @@ export function useVoice() {
   const currentTranscript = ref('')
   const error = ref<string | null>(null)
 
+  // Passive listening
+  const passiveEnabled = ref(true)
+  const isPassive = ref(false)
+
   let ws: WebSocket | null = null
   let mediaRecorder: MediaRecorder | null = null
   let audioChunks: Blob[] = []
   let audioCtx: AudioContext | null = null
   let pendingTranscript = ''
+
+  // VAD internal state
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let vad: any = null
+  let vadPhase: 'passive' | 'active' = 'passive'
+  let minWindowElapsed = false
+  let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
+  let minWindowTimer: ReturnType<typeof setTimeout> | null = null
+
+  // ── WebSocket ────────────────────────────────────────────────────────────────
 
   function connect(): void {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -61,6 +109,8 @@ export function useVoice() {
     }
   }
 
+  // ── Audio playback ────────────────────────────────────────────────────────────
+
   async function playAudio(base64: string, _format: 'mp3' | 'wav'): Promise<void> {
     if (!audioCtx) audioCtx = new AudioContext()
     const binary = atob(base64)
@@ -72,6 +122,12 @@ export function useVoice() {
     source.connect(audioCtx.destination)
     source.start()
   }
+
+  function playAckSound(): void {
+    new Audio('/ack-sound.mp3').play().catch(() => {})
+  }
+
+  // ── Manual recording ─────────────────────────────────────────────────────────
 
   async function startRecording(): Promise<void> {
     try {
@@ -98,6 +154,123 @@ export function useVoice() {
     mediaRecorder.stream.getTracks().forEach((t) => t.stop())
   }
 
+  // ── Passive VAD + wake word ───────────────────────────────────────────────────
+
+  async function handleSpeechEnd(audio: Float32Array): Promise<void> {
+    if (vadPhase === 'passive') {
+      await checkWakeWord(audio)
+    } else if (vadPhase === 'active' && minWindowElapsed) {
+      triggerActiveStop()
+    }
+  }
+
+  async function checkWakeWord(audio: Float32Array): Promise<void> {
+    const wav = float32ToWav(audio)
+    const blob = new Blob([wav], { type: 'audio/wav' })
+    const form = new FormData()
+    form.append('audio', blob, 'wake.wav')
+
+    try {
+      const result = await $fetch<{ heard: string }>('/api/wakeword', {
+        method: 'POST',
+        body: form,
+      })
+      if (result.heard.toLowerCase().includes('glados')) {
+        await triggerActiveStart()
+      }
+    } catch {
+      // Ignore wake word check errors silently — passive listening continues
+    }
+  }
+
+  async function triggerActiveStart(): Promise<void> {
+    vadPhase = 'active'
+    minWindowElapsed = false
+
+    playAckSound()
+    await startRecording()
+
+    // Minimum grace window — don't close on silence before this elapses
+    minWindowTimer = setTimeout(() => {
+      minWindowElapsed = true
+    }, 1500)
+
+    // Hard maximum — send regardless of VAD after 10s
+    activeListeningTimer = setTimeout(() => {
+      if (vadPhase === 'active') triggerActiveStop()
+    }, 10_000)
+  }
+
+  function triggerActiveStop(): void {
+    vadPhase = 'passive'
+
+    if (minWindowTimer !== null) {
+      clearTimeout(minWindowTimer)
+      minWindowTimer = null
+    }
+    if (activeListeningTimer !== null) {
+      clearTimeout(activeListeningTimer)
+      activeListeningTimer = null
+    }
+
+    stopRecording()
+  }
+
+  async function startPassiveListening(): Promise<void> {
+    if (vad) return // already running
+    try {
+      // Dynamic import — client-side only; never runs on server
+      const { MicVAD } = await import('@ricky0123/vad-web')
+      vad = await MicVAD.new({
+        baseAssetPath: '/_vad/',
+        onnxWASMBasePath: '/_vad/',
+        model: 'v5',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
+        onSpeechEnd: (audio: Float32Array) => {
+          void handleSpeechEnd(audio)
+        },
+      })
+      await vad.start()
+      isPassive.value = true
+    } catch (err) {
+      error.value = `Passive listening unavailable: ${err instanceof Error ? err.message : err}`
+      setTimeout(() => { error.value = null }, 5000)
+      passiveEnabled.value = false
+    }
+  }
+
+  function stopPassiveListening(): void {
+    if (!vad) return
+    vad.pause()
+    vad.destroy()
+    vad = null
+    isPassive.value = false
+    vadPhase = 'passive'
+  }
+
+  watch(passiveEnabled, (enabled) => {
+    if (enabled) {
+      void startPassiveListening()
+    } else {
+      stopPassiveListening()
+    }
+  })
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+  onMounted(() => {
+    connect()
+    if (passiveEnabled.value) void startPassiveListening()
+  })
+
+  onUnmounted(() => {
+    ws?.close()
+    stopPassiveListening()
+  })
+
+  // ── Misc ──────────────────────────────────────────────────────────────────────
+
   function sendPing(): void {
     ws?.send(JSON.stringify({ type: 'ping' }))
   }
@@ -109,15 +282,14 @@ export function useVoice() {
     pendingTranscript = ''
   }
 
-  onMounted(connect)
-  onUnmounted(() => ws?.close())
-
   return {
     state,
     isConnected,
     exchanges,
     currentTranscript,
     error,
+    passiveEnabled,
+    isPassive,
     startRecording,
     stopRecording,
     sendPing,
