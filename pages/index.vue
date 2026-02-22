@@ -8,6 +8,8 @@ const {
   startRecording,
   stopRecording,
   clearHistory,
+  passiveEnabled,
+  isPassive,
 } = useVoice()
 
 const isRecording = ref(false)
@@ -15,10 +17,12 @@ const transcriptEl = ref<HTMLElement | null>(null)
 
 const canInteract = computed(() => isConnected.value && state.value === 'IDLE')
 
-// Only override state display during the micro-moment before WS responds
-const activeState = computed(() =>
-  isRecording.value && state.value === 'IDLE' ? 'LISTENING' : state.value,
-)
+// Virtual display state — resolves local recording and passive listening into CSS class names
+const activeState = computed(() => {
+  if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
+  if (isPassive.value && state.value === 'IDLE') return 'PASSIVE'
+  return state.value
+})
 
 function onPressStart(e: Event): void {
   e.preventDefault()
@@ -33,6 +37,32 @@ function onPressEnd(): void {
   stopRecording()
 }
 
+// Spacebar push-to-talk
+function handleKeyDown(e: KeyboardEvent): void {
+  if (
+    e.code === 'Space' &&
+    !e.repeat &&
+    document.activeElement?.tagName !== 'INPUT' &&
+    document.activeElement?.tagName !== 'TEXTAREA'
+  ) {
+    onPressStart(e)
+  }
+}
+
+function handleKeyUp(e: KeyboardEvent): void {
+  if (e.code === 'Space') onPressEnd()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeyDown)
+  window.addEventListener('keyup', handleKeyUp)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeyDown)
+  window.removeEventListener('keyup', handleKeyUp)
+})
+
 // Auto-scroll transcript to bottom
 watch([exchanges, currentTranscript], async () => {
   await nextTick()
@@ -43,6 +73,7 @@ watch([exchanges, currentTranscript], async () => {
 // Server LISTENING means STT is running — labelled separately to avoid confusion.
 const stateLabel: Record<string, string> = {
   IDLE: 'Hold to speak',
+  PASSIVE: 'Awaiting wake word…',
   LISTENING: 'Transcribing…',
   THINKING: 'Processing…',
   EXECUTING: 'Executing…',
@@ -53,6 +84,7 @@ const recordingLabel = 'Listening…'
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
+    case 'PASSIVE': return 'text-ap-muted/60'
     case 'LISTENING': return 'text-ap-blue'
     case 'THINKING':
     case 'EXECUTING': return 'text-ap-orange'
@@ -86,6 +118,13 @@ function tickStyle(i: number): Record<string, string> {
         />
         {{ isConnected ? 'Online' : 'Offline' }}
       </div>
+      <button
+        class="text-[10px] font-mono tracking-widest uppercase transition-colors duration-200"
+        :class="passiveEnabled ? 'text-ap-blue' : 'text-ap-muted/40 hover:text-ap-muted'"
+        @click="passiveEnabled = !passiveEnabled"
+      >
+        {{ passiveEnabled ? '● Passive' : '○ Passive' }}
+      </button>
       <button
         class="text-[10px] font-mono tracking-widest uppercase text-ap-muted hover:text-white transition-colors duration-200"
         @click="clearHistory"
@@ -220,6 +259,27 @@ function tickStyle(i: number): Record<string, string> {
   --ring: var(--c-blue);
   --glow: rgba(51, 170, 255, 0.2);
   --glow-hi: rgba(51, 170, 255, 0.5);
+}
+
+.state-passive {
+  --ring: var(--c-blue);
+  --glow: rgba(51, 170, 255, 0.06);
+  --glow-hi: rgba(51, 170, 255, 0.15);
+}
+
+.state-passive .ring-outer {
+  animation: spin 60s linear infinite;
+  box-shadow: 0 0 8px var(--glow);
+  opacity: 0.5;
+}
+
+.state-passive .ring-mid {
+  opacity: 0.08;
+}
+
+.state-passive .iris {
+  animation: iris-pulse 3s ease-in-out infinite;
+  opacity: 0.4;
 }
 
 /* ─── Container ─────────────────────────────────────────── */
