@@ -17,7 +17,8 @@ export default defineNuxtConfig({
   },
   vite: {
     optimizeDeps: {
-      exclude: ['@ricky0123/vad-web', 'onnxruntime-web'],
+      include: ['@ricky0123/vad-web'],
+      exclude: ['onnxruntime-web'],
     },
   },
 })
