@@ -202,7 +202,9 @@ export function useVoice() {
 
       if (commandText.length > 2) {
         // Alexa-style: command is in the same utterance — send directly to pipeline
-        ws?.send(JSON.stringify({ type: 'command', text: commandText }))
+        const payload = JSON.stringify({ type: 'command', text: commandText })
+        console.log('[vad] sending WS command, readyState:', ws?.readyState, 'payload:', payload)
+        ws?.send(payload)
       } else {
         // Bare wake word — open active listening window
         await triggerActiveStart()

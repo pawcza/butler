@@ -37,6 +37,7 @@ export default defineWebSocketHandler({
     }
 
     // Text frame = control message
+    console.log('[ws] text frame, rawData type:', typeof msg.rawData, 'isBuffer:', Buffer.isBuffer(msg.rawData), 'text:', msg.text())
     let parsed: ClientMessage | null = null
     try {
       parsed = JSON.parse(msg.text()) as ClientMessage
