@@ -8,7 +8,7 @@ export default defineEventHandler(async (event) => {
   const buffer = Buffer.from(await file.arrayBuffer())
   let heard: string
   try {
-    heard = await transcribe(buffer, 'wav')
+    heard = await transcribe(buffer, 'wav', 'en')
   } catch (err) {
     throw createError({
       statusCode: 502,

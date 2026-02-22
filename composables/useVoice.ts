@@ -125,7 +125,10 @@ export function useVoice() {
   }
 
   function playAckSound(): void {
-    new Audio('/ack-sound.mp3').play().catch(() => {})
+    console.log('[vad] playing ack sound')
+    new Audio('/ack-sound.mp3').play().catch((err) => {
+      console.warn('[vad] ack sound blocked:', err)
+    })
   }
 
   // ── Manual recording ─────────────────────────────────────────────────────────
@@ -159,6 +162,7 @@ export function useVoice() {
   // ── Passive VAD + wake word ───────────────────────────────────────────────────
 
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
+    console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight)
     if (vadPhase === 'passive') {
       if (wakeCheckInFlight) return
       wakeCheckInFlight = true
@@ -179,19 +183,22 @@ export function useVoice() {
     form.append('audio', blob, 'wake.wav')
 
     try {
+      console.log('[vad] posting to /api/wakeword — blob size:', blob.size)
       const result = await $fetch<{ heard: string }>('/api/wakeword', {
         method: 'POST',
         body: form,
       })
-      if (result.heard.toLowerCase().includes('glados')) {
+      console.log('[vad] heard:', JSON.stringify(result.heard))
+      if (result.heard.toLowerCase().includes('home')) {
         await triggerActiveStart()
       }
-    } catch {
-      // Ignore wake word check errors silently — passive listening continues
+    } catch (err) {
+      console.warn('[vad] wakeword check failed:', err)
     }
   }
 
   async function triggerActiveStart(): Promise<void> {
+    console.log('[vad] wake word matched — starting active listening')
     vadPhase = 'active'
     minWindowElapsed = false
 
@@ -243,6 +250,7 @@ export function useVoice() {
       })
       await vad.start()
       isPassive.value = true
+      console.log('[vad] passive listening started')
     } catch (err) {
       error.value = `Passive listening unavailable: ${err instanceof Error ? err.message : err}`
       setTimeout(() => { error.value = null }, 5000)
