@@ -3,16 +3,22 @@ import { join } from 'node:path'
 import type { ToolRegistry, Device, ControlEntity, Tool } from '~/shared/types'
 
 const TOOL_DEFINITIONS: Tool[] = [
-  { name: 'turn_on_light',   description: 'Turn on a light entity',                                                    domain: 'light',   service: 'turn_on' },
-  { name: 'turn_off_light',  description: 'Turn off a light entity',                                                   domain: 'light',   service: 'turn_off' },
-  { name: 'open_cover',      description: 'Open a cover, blind, or shutter',                                           domain: 'cover',   service: 'open_cover' },
-  { name: 'close_cover',     description: 'Close a cover, blind, or shutter',                                          domain: 'cover',   service: 'close_cover' },
-  { name: 'set_temperature', description: 'Set thermostat temperature — requires extra param: temperature (number)',    domain: 'climate', service: 'set_temperature' },
-  { name: 'turn_on_switch',  description: 'Turn on a switch entity',                                                   domain: 'switch',  service: 'turn_on' },
-  { name: 'turn_off_switch', description: 'Turn off a switch entity',                                                  domain: 'switch',  service: 'turn_off' },
+  { name: 'turn_on_light',          description: 'Turn on a light entity',                                                    domain: 'light',        service: 'turn_on' },
+  { name: 'turn_off_light',         description: 'Turn off a light entity',                                                   domain: 'light',        service: 'turn_off' },
+  { name: 'open_cover',             description: 'Open a cover, blind, or shutter',                                           domain: 'cover',        service: 'open_cover' },
+  { name: 'close_cover',            description: 'Close a cover, blind, or shutter',                                          domain: 'cover',        service: 'close_cover' },
+  { name: 'set_temperature',        description: 'Set thermostat temperature — requires extra param: temperature (number)',    domain: 'climate',      service: 'set_temperature' },
+  { name: 'turn_on_switch',         description: 'Turn on a switch entity',                                                   domain: 'switch',       service: 'turn_on' },
+  { name: 'turn_off_switch',        description: 'Turn off a switch entity',                                                  domain: 'switch',       service: 'turn_off' },
+  { name: 'turn_on_media_player',   description: 'Turn on a media player (TV, speaker, etc.)',                                domain: 'media_player', service: 'turn_on' },
+  { name: 'turn_off_media_player',  description: 'Turn off a media player (TV, speaker, etc.)',                               domain: 'media_player', service: 'turn_off' },
+  { name: 'volume_up',              description: 'Increase volume on a media player',                                         domain: 'media_player', service: 'volume_up' },
+  { name: 'volume_down',            description: 'Decrease volume on a media player',                                         domain: 'media_player', service: 'volume_down' },
+  { name: 'mute_media_player',      description: 'Toggle mute on a media player',                                             domain: 'media_player', service: 'volume_mute' },
+  { name: 'media_play_pause',       description: 'Toggle play/pause on a media player',                                       domain: 'media_player', service: 'media_play_pause' },
 ]
 
-const SUPPORTED_DOMAINS = new Set(['light', 'cover', 'climate', 'switch'])
+const SUPPORTED_DOMAINS = new Set(['light', 'cover', 'climate', 'switch', 'media_player'])
 
 const DATA_PATH = join(process.cwd(), 'data', 'devices.json')
 
