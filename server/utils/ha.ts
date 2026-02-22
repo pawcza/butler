@@ -7,6 +7,27 @@ export interface HaState {
   }
 }
 
+export interface HaDevice {
+  id: string
+  name: string | null
+  name_by_user: string | null
+  area_id: string | null
+  manufacturer: string | null
+  model: string | null
+  disabled_by: string | null
+}
+
+export interface HaEntityEntry {
+  entity_id: string
+  device_id: string | null
+  disabled_by: string | null
+}
+
+export interface HaArea {
+  area_id: string
+  name: string
+}
+
 export interface HaServiceCallParams {
   domain: string
   service: string
@@ -36,41 +57,16 @@ export async function getStates(): Promise<HaState[]> {
   return haFetch<HaState[]>('/states')
 }
 
-/**
- * Resolves area names for all entities via HA's template API in a single request.
- * Returns entity_id → area name (only entries that have an area assigned).
- */
-export async function getEntityAreas(): Promise<Record<string, string>> {
-  const template =
-    '{% set ns = namespace(items=[]) %}' +
-    '{% for s in states %}' +
-    '{% set a = area_name(s.entity_id) %}' +
-    '{% if a %}' +
-    '{% set ns.items = ns.items + [{"e": s.entity_id, "a": a}] %}' +
-    '{% endif %}' +
-    '{% endfor %}' +
-    '{{ ns.items | to_json }}'
+export async function getDevices(): Promise<HaDevice[]> {
+  return haFetch<HaDevice[]>('/config/device_registry/list')
+}
 
-  const response = await fetch(`${config.HA_URL}/api/template`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.HA_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ template }),
-  })
+export async function getEntityRegistry(): Promise<HaEntityEntry[]> {
+  return haFetch<HaEntityEntry[]>('/config/entity_registry/list')
+}
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '(no body)')
-    throw new Error(`HA template API ${response.status}: ${errBody}`)
-  }
-
-  const items = JSON.parse(await response.text()) as Array<{ e: string; a: string }>
-  const map: Record<string, string> = {}
-  for (const item of items) {
-    map[item.e] = item.a
-  }
-  return map
+export async function getAreas(): Promise<HaArea[]> {
+  return haFetch<HaArea[]>('/config/area_registry/list')
 }
 
 export async function callService(params: HaServiceCallParams): Promise<unknown> {
