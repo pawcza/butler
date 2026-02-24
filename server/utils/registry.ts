@@ -92,6 +92,11 @@ export function isBuiltInTool(name: string): boolean {
   return BUTLER_TOOLS.some((t) => t.name === name)
 }
 
+export function rebuildToolCache(): void {
+  cachedTools = buildToolArray()
+  console.log(`[registry] Tool cache rebuilt: ${cachedTools.length} tools`)
+}
+
 export function getOllamaTools(): OllamaTool[] {
   return cachedTools
 }
