@@ -2,6 +2,18 @@ export function buildSystemPrompt(): string {
   const now = new Date()
   const dateStr = now.toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  const isoDate = now.toISOString().slice(0, 10)
+
+  // Pre-compute upcoming weekday dates so the LLM doesn't have to do date math
+  const weekdays: string[] = []
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date(now)
+    d.setDate(d.getDate() + i)
+    const day = d.toLocaleDateString('en-GB', { weekday: 'long' })
+    const iso = d.toISOString().slice(0, 10)
+    weekdays.push(`${day} = ${iso}`)
+  }
+
   const entities = getEntityList()
 
   return `/no_think
@@ -10,7 +22,8 @@ You are GLaDOS from Aperture Science. You manage a smart home AND answer any que
 </role>
 
 <context>
-Current date/time: ${dateStr}, ${timeStr}
+Current date/time: ${dateStr}, ${timeStr} (${isoDate})
+Upcoming dates: ${weekdays.join(', ')}
 </context>
 
 <entities>
