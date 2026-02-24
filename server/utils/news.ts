@@ -1,5 +1,6 @@
 import RSSParser from 'rss-parser'
 
+const log = createLog('news')
 const parser = new RSSParser()
 
 const FEEDS = [
@@ -10,6 +11,10 @@ const FEEDS = [
 
 const ITEMS_PER_FEED = 5
 const FETCH_TIMEOUT_MS = 8_000
+const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
+
+let cachedBriefing: string | null = null
+let cacheTimestamp = 0
 
 async function fetchFeed(url: string, label: string): Promise<string | null> {
   try {
@@ -29,12 +34,17 @@ async function fetchFeed(url: string, label: string): Promise<string | null> {
 
     return `[${label}]\n${lines.join('\n')}`
   } catch (err) {
-    console.warn(`[news] failed to fetch ${label}: ${err instanceof Error ? err.message : err}`)
+    log.warn(`failed to fetch ${label}: ${err instanceof Error ? err.message : err}`)
     return null
   }
 }
 
 export async function fetchNewsBriefing(): Promise<string> {
+  const now = Date.now()
+  if (cachedBriefing && (now - cacheTimestamp) < CACHE_TTL) {
+    return cachedBriefing
+  }
+
   const results = await Promise.all(FEEDS.map((f) => fetchFeed(f.url, f.label)))
   const sections = results.filter((r): r is string => r !== null)
 
@@ -42,5 +52,8 @@ export async function fetchNewsBriefing(): Promise<string> {
     return 'All news feeds are currently unreachable. The outside world may have ended. Or not. Either way, you should probably stay inside.'
   }
 
-  return sections.join('\n\n')
+  const briefing = sections.join('\n\n')
+  cachedBriefing = briefing
+  cacheTimestamp = now
+  return briefing
 }

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ServerEvent } from '~/shared/types'
 
+const log = createLog('timer')
+
 type Emitter = (event: ServerEvent) => void
 
 interface TimerEntry {
@@ -32,13 +34,13 @@ function getRingAudioBase64(): string {
 
 function onTimerExpired(label: string, emit: Emitter): void {
   timers.delete(label)
-  console.log(`[timer] "${label}" expired`)
+  log.info(`"${label}" expired`)
 
   try {
     const audioData = getRingAudioBase64()
     emit({ type: 'audio', data: audioData, format: 'mp3' })
   } catch (err) {
-    console.error('[timer] failed to send ring sound:', err)
+    log.fail('failed to send ring sound:', err)
   }
 
   emit({ type: 'response', text: `Timer "${label}" has finished.` })
@@ -71,7 +73,7 @@ export function startTimer(
     peerId,
   })
 
-  console.log(`[timer] started "${timerLabel}" for ${durationSeconds}s`)
+  log.ok(`started "${timerLabel}" for ${durationSeconds}s`)
   return { label: timerLabel, durationSeconds }
 }
 
@@ -118,7 +120,7 @@ export function clearTimersForPeer(peerId: string): void {
     if (entry.peerId === peerId) {
       clearTimeout(entry.handle)
       timers.delete(label)
-      console.log(`[timer] cleared "${label}" — peer ${peerId} disconnected`)
+      log.info(`cleared "${label}" — peer ${peerId} disconnected`)
     }
   }
 }

@@ -1,6 +1,6 @@
 import type { OllamaMessage, OllamaToolCall, ServerEvent } from '~/shared/types'
 
-const MAX_TOOL_ROUNDS = 5
+const log = createLog('pipeline')
 
 // Common Whisper hallucinations when transcribing silence or background noise.
 const WHISPER_HALLUCINATION_PATTERNS: RegExp[] = [
@@ -73,7 +73,7 @@ function extractJson(text: string): string | null {
 }
 
 function isKnownTool(name: string): boolean {
-  return isBuiltInTool(name) || isMcpTool(name)
+  return isBuiltInTool(name) || isHaTool(name)
 }
 
 /**
@@ -139,7 +139,7 @@ function resolveToolCalls(msg: OllamaMessage): { toolCalls: OllamaToolCall[]; co
   if (msg.content) {
     const extracted = extractToolCallsFromText(msg.content)
     if (extracted.length > 0) {
-      console.log(`[pipeline] fallback: extracted ${extracted.length} tool call(s) from text`)
+      log.warn(`fallback: extracted ${extracted.length} tool call(s) from text`)
       return { toolCalls: extracted, content: '' }
     }
   }
@@ -167,6 +167,7 @@ export async function processAudio(
   emit: Emitter,
   peerId: string,
 ): Promise<void> {
+  const t0 = Date.now()
   session.setState('LISTENING')
 
   let transcript: string
@@ -177,23 +178,26 @@ export async function processAudio(
     session.setState('IDLE')
     return
   }
+  const sttMs = Date.now() - t0
+  log.info(`STT: ${sttMs}ms → "${transcript.trim()}"`)
+
 
   const trimmed = transcript.trim()
   emit({ type: 'transcript', text: trimmed })
 
   if (trimmed.length < 2 || trimmed.split(/\s+/).length < 2) {
-    console.log(`[pipeline] discarding noise transcript: "${trimmed}"`)
+    log.warn(`discarding noise transcript: "${trimmed}" (${sttMs}ms wasted)`)
     session.setState('IDLE')
     return
   }
 
   if (isWhisperHallucination(trimmed)) {
-    console.log(`[pipeline] discarding hallucinated transcript: "${trimmed}"`)
+    log.warn(`discarding hallucinated transcript: "${trimmed}" (${sttMs}ms wasted)`)
     session.setState('IDLE')
     return
   }
 
-  await processCommand(transcript, session, emit, peerId)
+  await processCommand(transcript, session, emit, peerId, t0)
 }
 
 export async function processCommand(
@@ -201,20 +205,29 @@ export async function processCommand(
   session: SessionManager,
   emit: Emitter,
   peerId: string,
+  startedAt?: number,
 ): Promise<void> {
+  const t0 = startedAt ?? Date.now()
+  const lap = () => Date.now() - t0
   session.setState('THINKING')
 
   const systemPrompt = buildSystemPrompt()
-  const history = session.getHistory().slice(-6)
-
+  const history: OllamaMessage[] = session.getHistory().map((m) => ({
+    role: m.role,
+    content: m.content,
+  }))
   const messages: OllamaMessage[] = [
     { role: 'system', content: systemPrompt },
-    ...history.map((m): OllamaMessage => ({ role: m.role, content: m.content })),
+    ...history,
     { role: 'user', content: text },
   ]
 
   const tools = getOllamaTools()
-  console.log(`[pipeline] tools available: ${tools.length} (${tools.map((t) => t.function.name).join(', ')})`)
+  log.info(`▶ "${text}"`)
+  log.info(`  system: ${systemPrompt.length}ch | tools: ${tools.length}`)
+
+
+  const MAX_TOOL_ROUNDS = 3
 
   let assistantMsg: OllamaMessage
   try {
@@ -225,56 +238,86 @@ export async function processCommand(
     return
   }
 
-  // Resolve tool calls (native or text-extracted fallback)
-  let { toolCalls, content } = resolveToolCalls(assistantMsg)
-  console.log(`[llm] response: content=${JSON.stringify(content).slice(0, 200)}, tool_calls=${toolCalls.length}`)
+  let resolved = resolveToolCalls(assistantMsg)
+  log.info(`+${lap()}ms LLM done`)
 
-  // Agentic loop: execute tool calls, feed results back, repeat
-  let rounds = 0
-  while (toolCalls.length > 0 && rounds < MAX_TOOL_ROUNDS) {
-    rounds++
+  let round = 0
+  let totalToolCalls = 0
+  while (resolved.toolCalls.length > 0 && round < MAX_TOOL_ROUNDS) {
+    round++
     session.setState('EXECUTING')
 
-    // Add assistant message to conversation (with tool_calls for context)
-    messages.push({ ...assistantMsg, tool_calls: toolCalls, content })
+    messages.push({ ...assistantMsg, tool_calls: resolved.toolCalls, content: resolved.content })
 
-    for (const toolCall of toolCalls) {
-      const name = toolCall.function.name
-      const args = toolCall.function.arguments
-      console.log(`[pipeline] tool call #${rounds}: ${name}(${JSON.stringify(args)})`)
+    const toolResults = await Promise.all(
+      resolved.toolCalls.map(async (tc) => {
+        const name = tc.function.name
+        const args = tc.function.arguments
+        const t = Date.now()
+        let result: string
+        let status = 'OK'
+        try {
+          if (isBuiltInTool(name)) {
+            result = await executeBuiltIn(name, args, { emit, peerId })
+          } else {
+            result = await executeHaTool(name, args)
+          }
+          if (result.startsWith('Error')) status = 'err'
+        } catch (err) {
+          result = `Error: ${err instanceof Error ? err.message : err}`
+          status = 'err'
+        }
+        return { name, args, result, status, ms: Date.now() - t }
+      }),
+    )
 
-      let result: string
-      if (isBuiltInTool(name)) {
-        result = await executeBuiltIn(name, args, { emit, peerId })
-      } else {
-        result = await executeMcpTool(name, args)
-      }
+    totalToolCalls += toolResults.length
+    log.table(toolResults.map((r) => ({
+      tool: r.name,
+      args: JSON.stringify(r.args).slice(0, 40),
+      status: r.status,
+      time: `${r.ms}ms`,
+    })))
 
-      messages.push({ role: 'tool', content: result, tool_name: name })
+    for (const r of toolResults) {
+      messages.push({ role: 'tool', content: r.result, tool_name: r.name })
     }
+    log.divider()
 
-    // Ask LLM to interpret results (no tools — force text response)
     session.setState('THINKING')
     try {
-      assistantMsg = await chatWithTools(messages, [])
+      assistantMsg = await chatWithTools(messages)
     } catch (err) {
       emit({ type: 'error', message: `LLM failed: ${err instanceof Error ? err.message : err}` })
       session.setState('IDLE')
       return
     }
 
-    const resolved = resolveToolCalls(assistantMsg)
-    toolCalls = resolved.toolCalls
-    content = resolved.content
-    console.log(`[llm] follow-up #${rounds}: content=${JSON.stringify(content).slice(0, 200)}, tool_calls=${toolCalls.length}`)
+    resolved = resolveToolCalls(assistantMsg)
+    log.info(`+${lap()}ms follow-up done (round ${round})`)
   }
 
-  const replyText = content.trim() || 'Done. You are welcome.'
+  if (round >= MAX_TOOL_ROUNDS && resolved.toolCalls.length > 0) {
+    log.warn(`max tool rounds (${MAX_TOOL_ROUNDS}) reached, returning last response`)
+  }
+
+  const replyText = (round > 0 ? assistantMsg.content : resolved.content).trim() || 'Done. You are welcome.'
 
   session.addMessage({ role: 'user', content: text })
   session.addMessage({ role: 'assistant', content: replyText })
 
   emit({ type: 'response', text: replyText })
+
+  const ttsStart = Date.now()
   await speakAndEmit(replyText, session, emit)
+  const ttsMs = Date.now() - ttsStart
+
+  log.divider()
+  log.table({
+    total: `${lap()}ms`,
+    rounds: round,
+    tools: totalToolCalls,
+    tts: `${ttsMs}ms`,
+  })
   session.setState('IDLE')
 }

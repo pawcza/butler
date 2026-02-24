@@ -1,5 +1,6 @@
 import type { ClientMessage, ServerEvent } from '~/shared/types'
 
+const log = createLog('ws')
 const sessions = new Map<string, SessionManager>()
 
 function send(peer: { send: (data: string) => void }, event: ServerEvent): void {
@@ -8,7 +9,7 @@ function send(peer: { send: (data: string) => void }, event: ServerEvent): void 
 
 export default defineWebSocketHandler({
   open(peer) {
-    console.log('[ws] peer opened:', peer.id)
+    log.info('peer opened:', peer.id)
     const session = new SessionManager((state) => {
       send(peer, { type: 'state', state })
     })
@@ -17,10 +18,10 @@ export default defineWebSocketHandler({
   },
 
   async message(peer, msg) {
-    console.log('[ws] message handler, peer:', peer.id, '| sessions size:', sessions.size, '| rawData type:', typeof msg.rawData, '| isBuffer:', Buffer.isBuffer(msg.rawData))
+    log.info('message handler, peer:', peer.id, '| sessions size:', sessions.size, '| rawData type:', typeof msg.rawData, '| isBuffer:', Buffer.isBuffer(msg.rawData))
     const session = sessions.get(peer.id)
     if (!session) {
-      console.log('[ws] no session for peer:', peer.id)
+      log.warn('no session for peer:', peer.id)
       return
     }
 
@@ -52,9 +53,9 @@ export default defineWebSocketHandler({
           return
         }
         send(peer, { type: 'transcript', text: parsed.text })
-        console.log('[ws] text command:', JSON.stringify(parsed.text))
+        log.info('text command:', JSON.stringify(parsed.text))
         processCommand(parsed.text, session, (event) => send(peer, event), peer.id).catch((err) => {
-          console.error('[ws] processCommand threw:', err)
+          log.fail('processCommand threw:', err)
           send(peer, { type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
           session.setState('IDLE')
         })
@@ -65,6 +66,7 @@ export default defineWebSocketHandler({
         send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
         return
       }
+      log.info(`audio received: ${(buffer.length / 1024).toFixed(1)}KB`)
       void processAudio(buffer, session, (event) => send(peer, event), peer.id)
     }
   },
@@ -76,6 +78,6 @@ export default defineWebSocketHandler({
   },
 
   error(peer, error) {
-    console.error(`[ws] peer ${peer.id} error:`, error)
+    log.fail(`peer ${peer.id} error:`, error)
   },
 })

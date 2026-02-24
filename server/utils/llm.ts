@@ -1,5 +1,7 @@
 import type { OllamaMessage, OllamaTool } from '~/shared/types'
 
+const log = createLog('ollama')
+
 interface OllamaResponse {
   message: OllamaMessage
   done: boolean
@@ -12,7 +14,7 @@ export function stripThinking(content: string): string {
 
 export async function chatWithTools(
   messages: OllamaMessage[],
-  tools: OllamaTool[],
+  tools: OllamaTool[] = [],
 ): Promise<OllamaMessage> {
   const body: Record<string, unknown> = {
     model: config.OLLAMA_MODEL,
@@ -29,15 +31,27 @@ export async function chatWithTools(
     },
   }
 
-  const payloadSize = JSON.stringify(body).length
-  console.log(`[ollama] POST /api/chat — ${messages.length} messages, ${tools.length} tools, payload ${(payloadSize / 1024).toFixed(1)}KB`)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 60_000)
 
   const t0 = performance.now()
-  const response = await fetch(`${config.OLLAMA_URL}/api/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.OLLAMA_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    clearTimeout(timeout)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Ollama request timed out after 60s')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '(no body)')
@@ -55,9 +69,9 @@ export async function chatWithTools(
   const promptMs = result.prompt_eval_duration ? (result.prompt_eval_duration / 1e6).toFixed(0) : '?'
   const genTokens = result.eval_count ?? '?'
   const genMs = result.eval_duration ? (result.eval_duration / 1e6).toFixed(0) : '?'
-  console.log(`[ollama] ${elapsed}s total | prompt: ${promptTokens} tokens/${promptMs}ms | gen: ${genTokens} tokens/${genMs}ms`)
   // Strip any leaked thinking blocks
   result.message.content = stripThinking(result.message.content)
-  console.log(`[ollama] response — role=${result.message.role}, content=${result.message.content.length}ch, tool_calls=${result.message.tool_calls?.length ?? 0}`)
+  const toolCallCount = result.message.tool_calls?.length ?? 0
+  log.info(`${elapsed}s (prompt ${promptTokens}tok/${promptMs}ms, gen ${genTokens}tok/${genMs}ms) → ${toolCallCount > 0 ? `${toolCallCount} tool call(s)` : `"${result.message.content.slice(0, 120)}"`}`)
   return result.message
 }

@@ -1,20 +1,27 @@
 export default defineNitroPlugin(async () => {
+  const log = createLog('butler')
+
   // Importing config triggers Zod validation — exits process if env is invalid
   const _config = config
 
-  console.log('[butler] Connecting to MCP server...')
+  // Verify HA is reachable
   try {
-    await buildRegistry()
+    await haFetch('/')
+    log.ok('Home Assistant connected.')
   } catch (err) {
-    console.error('[butler] WARNING: Could not connect to MCP server:', err)
-    console.error('[butler] Continuing with empty tool list. Use POST /api/refresh when MCP is reachable.')
+    log.fail('Could not reach Home Assistant:', err)
   }
+
+  buildRegistry()
 
   try {
     await refreshEntityList()
   } catch (err) {
-    console.warn('[butler] WARNING: Could not fetch entity list:', err)
+    log.warn('Could not fetch entity list:', err)
   }
 
-  console.log('[butler] GLaDOS is online.')
+  // Warm up Whisper model so first request isn't slow
+  warmUpStt().catch(() => {})
+
+  log.ok('GLaDOS is online.')
 })

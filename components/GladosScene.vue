@@ -17,9 +17,12 @@ import {
 } from 'three'
 import { BloomPmndrs, EffectComposerPmndrs } from '@tresjs/post-processing'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   activeState: string
-}>()
+  audioEnergy?: number
+}>(), {
+  audioEnergy: 0,
+})
 
 const activeStateRef = toRef(props, 'activeState')
 const { current: ap, update: updateAp } = useAvatarState(activeStateRef)
@@ -178,14 +181,20 @@ const colorLight2Ref = shallowRef<PointLight | null>(null)
 const tmpColor = new Color()
 let elapsed = 0
 let ringsSeeded = false
+let smoothedEnergy = 0
 
-const bloomIntensity = computed(() => ap.bloomIntensity)
+const bloomIntensity = ref(ap.bloomIntensity)
 
 const { onBeforeRender } = useLoop()
 
 onBeforeRender(({ delta }) => {
   const dt = Math.min(delta, 0.1)
   updateAp(dt)
+
+  // Smooth audio energy to avoid jarring jumps
+  const energyTarget = props.audioEnergy
+  smoothedEnergy += (energyTarget - smoothedEnergy) * (1 - Math.exp(-12 * dt))
+  const ae = smoothedEnergy
 
   // Orbit camera
   const cam = cameraRef.value
@@ -201,10 +210,10 @@ onBeforeRender(({ delta }) => {
 
   elapsed += dt
 
-  // Core — color
+  // Core — color + audio energy boost
   coreMat.emissive.copy(tmpColor)
   coreMat.color.copy(tmpColor)
-  coreMat.emissiveIntensity = ap.coreIntensity
+  coreMat.emissiveIntensity = ap.coreIntensity + ae * 0.5
 
   // Core — spin, scale, distortion
   const core = coreRef.value
@@ -215,7 +224,7 @@ onBeforeRender(({ delta }) => {
 
     // Distort — non-uniform scale wobble (3 out-of-phase sine waves)
     const d = ap.coreDistort
-    const s = ap.coreScale
+    const s = ap.coreScale + ae * 0.15
     if (d > 0.01) {
       const t = elapsed * 8
       core.scale.set(
@@ -302,8 +311,11 @@ onBeforeRender(({ delta }) => {
     pts.rotation.y += ap.particleSpeed * dt * 0.5
     pts.rotation.x += ap.particleSpeed * dt * 0.2
     particleMat.color.copy(tmpColor)
-    particleMat.opacity = ap.particleOpacity
+    particleMat.opacity = ap.particleOpacity + ae * 0.3
   }
+
+  // Bloom — modulated by audio energy
+  bloomIntensity.value = ap.bloomIntensity + ae * 0.3
 })
 </script>
 

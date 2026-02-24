@@ -57,6 +57,10 @@ let pendingTranscript = ''
 let isPlayingAudio = false
 let recordingGen = 0
 
+// Module-level audio energy — shared across composable re-invocations
+const audioEnergy = ref(0)
+let analyserRafId = 0
+
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
   const isConnected = ref(false)
@@ -68,6 +72,9 @@ export function useVoice() {
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
   const isHearing = ref(false)
+
+  // True between wake word detection and first server state event — masks STT latency
+  const isProcessingWake = ref(false)
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -91,6 +98,7 @@ export function useVoice() {
 
     switch (event.type) {
       case 'state':
+        isProcessingWake.value = false
         // Don't go IDLE while audio is still playing — stay in SPEAKING
         if (event.state === 'IDLE' && isPlayingAudio) break
         state.value = event.state
@@ -130,13 +138,36 @@ export function useVoice() {
       const decoded = await audioCtx.decodeAudioData(bytes.buffer)
       const source = audioCtx.createBufferSource()
       source.buffer = decoded
-      source.connect(audioCtx.destination)
+
+      // Route through analyser for audio energy extraction
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      analyser.connect(audioCtx.destination)
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      function updateEnergy() {
+        analyser.getByteFrequencyData(dataArray)
+        let sum = 0
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = dataArray[i] ?? 0
+          sum += v * v
+        }
+        audioEnergy.value = Math.sqrt(sum / dataArray.length) / 128
+        analyserRafId = requestAnimationFrame(updateEnergy)
+      }
+      updateEnergy()
+
       source.onended = () => {
+        cancelAnimationFrame(analyserRafId)
+        audioEnergy.value = 0
         isPlayingAudio = false
         state.value = 'IDLE'
       }
       source.start()
     } catch {
+      cancelAnimationFrame(analyserRafId)
+      audioEnergy.value = 0
       isPlayingAudio = false
       state.value = 'IDLE'
     }
@@ -153,7 +184,10 @@ export function useVoice() {
 
   async function startRecording(silent = false): Promise<void> {
     if (mediaRecorder?.state === 'recording') return
-    if (!silent) playAckSound()
+    if (!silent) {
+      playAckSound()
+      if (vad) vad.pause()
+    }
     const gen = ++recordingGen
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -179,6 +213,7 @@ export function useVoice() {
       mediaRecorder.onstop = null
       mediaRecorder.stop()
       mediaRecorder.stream.getTracks().forEach((t) => t.stop())
+      if (vad && isPassive.value) vad.start()
       return
     }
     if (!ws) return
@@ -190,6 +225,7 @@ export function useVoice() {
     }
     mediaRecorder.stop()
     mediaRecorder.stream.getTracks().forEach((t) => t.stop())
+    if (vad && isPassive.value) vad.start()
   }
 
   // ── Passive VAD + wake word ───────────────────────────────────────────────────
@@ -236,6 +272,7 @@ export function useVoice() {
       console.log('[vad] command text:', JSON.stringify(commandText))
 
       playAckSound()
+      isProcessingWake.value = true
 
       if (commandText.length > 2) {
         // Alexa-style: command is in the same utterance — send directly to pipeline
@@ -247,6 +284,7 @@ export function useVoice() {
         await triggerActiveStart()
       }
     } catch (err) {
+      isProcessingWake.value = false
       console.warn('[vad] wakeword check failed:', err)
     }
   }
@@ -371,6 +409,8 @@ export function useVoice() {
     passiveEnabled,
     isPassive,
     isHearing,
+    isProcessingWake: readonly(isProcessingWake),
+    audioEnergy: readonly(audioEnergy),
     startRecording,
     stopRecording,
     sendPing,

@@ -1,3 +1,24 @@
+const log = createLog('stt')
+
+/** Send a tiny silent WAV to Speaches so it loads the Whisper model eagerly. */
+export async function warmUpStt(): Promise<void> {
+  const t0 = Date.now()
+  log.info('warming up Whisper model...')
+  // 0.1s of silence at 16kHz mono 16-bit PCM
+  const samples = 1600
+  const dataSize = samples * 2
+  const buf = Buffer.alloc(44 + dataSize)
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + dataSize, 4)
+  buf.write('WAVE', 8); buf.write('fmt ', 12)
+  buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22)
+  buf.writeUInt32LE(16000, 24); buf.writeUInt32LE(32000, 28)
+  buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34)
+  buf.write('data', 36); buf.writeUInt32LE(dataSize, 40)
+  // PCM data stays zero (silence)
+  await transcribe(buf, 'wav')
+  log.ok(`Whisper warm — ${Date.now() - t0}ms`)
+}
+
 export async function transcribe(
   audioBuffer: Buffer,
   format: 'webm' | 'wav' = 'webm',
@@ -10,10 +31,25 @@ export async function transcribe(
   formData.append('file', blob, filename)
   formData.append('model', config.WHISPER_MODEL)
 
-  const response = await fetch(`${config.WHISPER_URL}/v1/audio/transcriptions`, {
-    method: 'POST',
-    body: formData,
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30_000)
+
+  let response: Response
+  try {
+    response = await fetch(`${config.WHISPER_URL}/v1/audio/transcriptions`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    })
+  } catch (err) {
+    clearTimeout(timeout)
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('STT request timed out after 30s')
+    }
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => '(no body)')

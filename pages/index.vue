@@ -11,6 +11,8 @@ const {
   passiveEnabled,
   isPassive,
   isHearing,
+  isProcessingWake,
+  audioEnergy,
 } = useVoice()
 
 const isRecording = ref(false)
@@ -26,6 +28,7 @@ let pressStartedAt = 0
 // Server LISTENING = transcribing audio (processing phase) → show as THINKING.
 // Local isRecording = actively capturing mic → show as LISTENING (blue).
 const activeState = computed(() => {
+  if (isProcessingWake.value) return 'THINKING'
   if (isHearing.value && isPassive.value && state.value === 'IDLE') return 'HEARING'
   if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
   if (isPassive.value && state.value === 'IDLE') return 'PASSIVE'
@@ -36,6 +39,7 @@ const activeState = computed(() => {
 function onPressStart(e: Event): void {
   e.preventDefault()
   if (!canInteract.value) return
+  isHearing.value = false
   pressStartedAt = Date.now()
   isRecording.value = true
   void startRecording()
@@ -112,6 +116,7 @@ const stateLabelClass = computed(() => {
     <!-- 3D background — full screen behind everything -->
     <GladosAvatar
       :active-state="activeState"
+      :audio-energy="audioEnergy"
       @press-start="onPressStart"
       @press-end="onPressEnd"
     />
@@ -127,7 +132,7 @@ const stateLabelClass = computed(() => {
 
         <!-- Status row -->
         <div class="flex items-center justify-between px-6 pt-1 pb-3">
-          <div class="flex items-center gap-2 text-[10px] font-mono tracking-widest uppercase text-ap-muted">
+          <div class="flex items-center gap-2 text-[10px] font-mono tracking-widest uppercase text-gray-400">
             <span
               class="w-1.5 h-1.5 rounded-full"
               :class="isConnected ? 'bg-green-500 shadow-[0_0_4px_rgba(74,222,128,0.7)]' : 'bg-ap-red'"
@@ -135,14 +140,16 @@ const stateLabelClass = computed(() => {
             {{ isConnected ? 'Online' : 'Offline' }}
           </div>
           <button
-            class="text-[10px] font-mono tracking-widest uppercase transition-colors duration-200"
+            class="min-h-[44px] text-[10px] font-mono tracking-widest uppercase transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-ap-blue/50 active:scale-95 rounded"
             :class="passiveEnabled ? 'text-ap-blue' : 'text-ap-muted/40 hover:text-ap-muted'"
+            aria-label="Toggle passive listening mode"
             @click="passiveEnabled = !passiveEnabled"
           >
             {{ passiveEnabled ? '● Passive' : '○ Passive' }}
           </button>
           <button
-            class="text-[10px] font-mono tracking-widest uppercase text-ap-muted hover:text-white transition-colors duration-200"
+            class="min-h-[44px] text-[10px] font-mono tracking-widest uppercase text-ap-muted hover:text-white transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-ap-blue/50 active:scale-95 rounded"
+            aria-label="Clear conversation history"
             @click="clearHistory"
           >
             Clear
@@ -158,6 +165,7 @@ const stateLabelClass = computed(() => {
         >
           <div
             v-if="error"
+            role="alert"
             class="mx-6 mb-3 text-xs font-mono text-ap-red bg-ap-red/10 border border-ap-red/20 rounded px-3 py-2"
           >
             {{ error }}
@@ -171,10 +179,15 @@ const stateLabelClass = computed(() => {
       <!-- State label — floating above transcript -->
       <div class="flex justify-center pb-2">
         <span
-          class="text-[9px] font-mono tracking-[0.2em] uppercase transition-colors duration-500 backdrop-blur-md bg-black/30 px-3 py-1 rounded-full"
+          class="text-[9px] font-mono tracking-[0.2em] uppercase transition-colors duration-500 backdrop-blur-md bg-black/30 px-3 py-1 rounded-full flex items-center gap-1.5"
           :class="stateLabelClass"
         >
           {{ stateLabel[activeState] ?? activeState }}
+          <span
+            v-if="activeState === 'THINKING' || activeState === 'EXECUTING'"
+            class="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
+            :class="activeState === 'THINKING' ? 'bg-amber-400' : 'bg-green-400'"
+          />
         </span>
       </div>
 
@@ -188,25 +201,22 @@ const stateLabelClass = computed(() => {
             v-if="exchanges.length === 0 && !currentTranscript"
             class="flex justify-center"
           >
-            <p class="text-[9px] font-mono tracking-[0.2em] uppercase text-ap-muted/30">
+            <p class="text-[9px] font-mono tracking-[0.2em] uppercase text-ap-muted/50">
               Aperture Science Domestic Assistance Android
             </p>
           </div>
 
-          <div v-for="(ex, i) in exchanges" :key="i" class="space-y-1">
-            <div class="flex gap-3 items-baseline">
-              <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
-              <span class="text-sm font-mono text-ap-blue/80">{{ ex.heard }}</span>
+          <template v-for="(ex, i) in exchanges" :key="i">
+            <div class="flex justify-end">
+              <span class="text-sm font-mono text-ap-blue/80 bg-ap-blue/15 rounded-lg rounded-br-sm px-3 py-1.5 max-w-[80%]">{{ ex.heard }}</span>
             </div>
-            <div class="flex gap-3 items-baseline">
-              <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-orange">GLaDOS</span>
-              <span class="text-sm font-mono text-gray-300">{{ ex.reply }}</span>
+            <div class="flex justify-start">
+              <span class="text-sm font-mono text-gray-300 bg-white/5 rounded-lg rounded-bl-sm px-3 py-1.5 max-w-[80%]">{{ ex.reply }}</span>
             </div>
-          </div>
+          </template>
 
-          <div v-if="currentTranscript" class="flex gap-3 items-baseline opacity-40">
-            <span class="shrink-0 w-12 text-[9px] font-mono tracking-[0.15em] uppercase text-ap-muted">You</span>
-            <span class="text-sm font-mono text-ap-blue italic">{{ currentTranscript }}</span>
+          <div v-if="currentTranscript" class="flex justify-end opacity-70">
+            <span class="text-sm font-mono text-ap-blue/60 italic bg-ap-blue/5 rounded-lg rounded-br-sm px-3 py-1.5 max-w-[80%]">{{ currentTranscript }}</span>
           </div>
         </div>
       </div>

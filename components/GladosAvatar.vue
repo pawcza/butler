@@ -1,7 +1,10 @@
 <script setup lang="ts">
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   activeState: string
-}>()
+  audioEnergy?: number
+}>(), {
+  audioEnergy: 0,
+})
 
 const emit = defineEmits<{
   pressStart: [e: Event]
@@ -32,7 +35,7 @@ function onPointerUp() {
       window-size
       :power-preference="'high-performance'"
     >
-      <GladosScene :active-state="props.activeState" />
+      <GladosScene :active-state="props.activeState" :audio-energy="props.audioEnergy" />
     </TresCanvas>
   </div>
 </template>
