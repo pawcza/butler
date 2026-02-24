@@ -39,6 +39,24 @@ function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
   return buffer
 }
 
+// ── Module-level singletons — survive HMR / composable re-invocations ────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let vad: any = null
+let vadStarting = false
+let vadPhase: 'passive' | 'active' = 'passive'
+let wakeCheckInFlight = false
+let minWindowElapsed = false
+let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
+let minWindowTimer: ReturnType<typeof setTimeout> | null = null
+
+let ws: WebSocket | null = null
+let mediaRecorder: MediaRecorder | null = null
+let audioChunks: Blob[] = []
+let audioCtx: AudioContext | null = null
+let pendingTranscript = ''
+let isPlayingAudio = false
+let recordingGen = 0
+
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
   const isConnected = ref(false)
@@ -49,21 +67,6 @@ export function useVoice() {
   // Passive listening
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
-
-  let ws: WebSocket | null = null
-  let mediaRecorder: MediaRecorder | null = null
-  let audioChunks: Blob[] = []
-  let audioCtx: AudioContext | null = null
-  let pendingTranscript = ''
-
-  // VAD internal state
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let vad: any = null
-  let vadPhase: 'passive' | 'active' = 'passive'
-  let wakeCheckInFlight = false
-  let minWindowElapsed = false
-  let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
-  let minWindowTimer: ReturnType<typeof setTimeout> | null = null
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -87,6 +90,8 @@ export function useVoice() {
 
     switch (event.type) {
       case 'state':
+        // Don't go IDLE while audio is still playing — stay in SPEAKING
+        if (event.state === 'IDLE' && isPlayingAudio) break
         state.value = event.state
         break
       case 'transcript':
@@ -113,15 +118,27 @@ export function useVoice() {
   // ── Audio playback ────────────────────────────────────────────────────────────
 
   async function playAudio(base64: string, _format: 'mp3' | 'wav'): Promise<void> {
-    if (!audioCtx) audioCtx = new AudioContext()
-    const binary = atob(base64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    const decoded = await audioCtx.decodeAudioData(bytes.buffer)
-    const source = audioCtx.createBufferSource()
-    source.buffer = decoded
-    source.connect(audioCtx.destination)
-    source.start()
+    // Set flag BEFORE any async work — the server IDLE event can arrive
+    // while decodeAudioData is running and must be blocked.
+    isPlayingAudio = true
+    try {
+      if (!audioCtx) audioCtx = new AudioContext()
+      const binary = atob(base64)
+      const bytes = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+      const decoded = await audioCtx.decodeAudioData(bytes.buffer)
+      const source = audioCtx.createBufferSource()
+      source.buffer = decoded
+      source.connect(audioCtx.destination)
+      source.onended = () => {
+        isPlayingAudio = false
+        state.value = 'IDLE'
+      }
+      source.start()
+    } catch {
+      isPlayingAudio = false
+      state.value = 'IDLE'
+    }
   }
 
   function playAckSound(): void {
@@ -135,8 +152,14 @@ export function useVoice() {
 
   async function startRecording(): Promise<void> {
     if (mediaRecorder?.state === 'recording') return
+    const gen = ++recordingGen
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // If stopRecording was called while awaiting mic access, discard
+      if (gen !== recordingGen) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
       audioChunks = []
       mediaRecorder = new MediaRecorder(stream)
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
@@ -147,8 +170,16 @@ export function useVoice() {
     }
   }
 
-  function stopRecording(): void {
-    if (!mediaRecorder || mediaRecorder.state === 'inactive' || !ws) return
+  function stopRecording(discard = false): void {
+    recordingGen++ // invalidate any in-flight startRecording
+    if (!mediaRecorder || mediaRecorder.state === 'inactive') return
+    if (discard) {
+      mediaRecorder.onstop = null
+      mediaRecorder.stop()
+      mediaRecorder.stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    if (!ws) return
     const currentWs = ws
     mediaRecorder.onstop = async () => {
       if (!currentWs) return
@@ -251,7 +282,8 @@ export function useVoice() {
   }
 
   async function startPassiveListening(): Promise<void> {
-    if (vad) return // already running
+    if (vad || vadStarting) return // already running or initializing
+    vadStarting = true
     try {
       // Dynamic import — client-side only; never runs on server
       const { MicVAD } = await import('@ricky0123/vad-web')
@@ -259,7 +291,7 @@ export function useVoice() {
         baseAssetPath: '/_vad/',
         onnxWASMBasePath: '/_vad/',
         model: 'v5',
-        minSpeechFrames: 1,
+        minSpeechMs: 30,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
         onSpeechEnd: (audio: Float32Array) => {
@@ -273,6 +305,8 @@ export function useVoice() {
       error.value = `Passive listening unavailable: ${err instanceof Error ? err.message : err}`
       setTimeout(() => { error.value = null }, 5000)
       passiveEnabled.value = false
+    } finally {
+      vadStarting = false
     }
   }
 

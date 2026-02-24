@@ -1,155 +1,104 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
-import type { ToolRegistry, Device, ControlEntity, Tool } from '~/shared/types'
+import type { ButlerTool, OllamaTool } from '~/shared/types'
 
-const TOOL_DEFINITIONS: Tool[] = [
-  { name: 'turn_on_light',          description: 'Turn on a light entity',                                                    domain: 'light',        service: 'turn_on' },
-  { name: 'turn_off_light',         description: 'Turn off a light entity',                                                   domain: 'light',        service: 'turn_off' },
-  { name: 'open_cover',             description: 'Open a cover, blind, or shutter',                                           domain: 'cover',        service: 'open_cover' },
-  { name: 'close_cover',            description: 'Close a cover, blind, or shutter',                                          domain: 'cover',        service: 'close_cover' },
-  { name: 'set_temperature',        description: 'Set thermostat temperature — requires extra param: temperature (number)',    domain: 'climate',      service: 'set_temperature' },
-  { name: 'turn_on_switch',         description: 'Turn on a switch entity',                                                   domain: 'switch',       service: 'turn_on' },
-  { name: 'turn_off_switch',        description: 'Turn off a switch entity',                                                  domain: 'switch',       service: 'turn_off' },
-  { name: 'turn_on_media_player',   description: 'Turn on a media player (TV, speaker, etc.)',                                domain: 'media_player', service: 'turn_on' },
-  { name: 'turn_off_media_player',  description: 'Turn off a media player (TV, speaker, etc.)',                               domain: 'media_player', service: 'turn_off' },
-  { name: 'volume_up',              description: 'Increase volume on a media player',                                         domain: 'media_player', service: 'volume_up' },
-  { name: 'volume_down',            description: 'Decrease volume on a media player',                                         domain: 'media_player', service: 'volume_down' },
-  { name: 'mute_media_player',      description: 'Toggle mute on a media player',                                             domain: 'media_player', service: 'volume_mute' },
-  { name: 'media_play_pause',       description: 'Toggle play/pause on a media player',                                       domain: 'media_player', service: 'media_play_pause' },
+const BUTLER_TOOLS: ButlerTool[] = [
+  {
+    name: 'timer_start',
+    description: 'Start a countdown timer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        duration_seconds: { type: 'number', description: 'Duration in seconds' },
+        label: { type: 'string', description: 'Optional label for the timer' },
+      },
+      required: ['duration_seconds'],
+    },
+  },
+  {
+    name: 'timer_stop',
+    description: 'Cancel an active timer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Timer label to cancel. Omit to cancel all timers.' },
+      },
+    },
+  },
+  {
+    name: 'timer_check',
+    description: 'Check remaining time on active timers.',
+    parameters: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Timer label to check. Omit to list all.' },
+      },
+    },
+  },
+  {
+    name: 'news_briefing',
+    description: 'Fetch latest world and tech news headlines.',
+    parameters: { type: 'object', properties: {} },
+  },
 ]
 
-const SUPPORTED_DOMAINS = new Set(['light', 'cover', 'climate', 'switch', 'media_player'])
-
-const DATA_PATH = join(process.cwd(), 'data', 'devices.json')
-
-type DeviceConfig = Record<string, { interactable: boolean }>
-
-function readDeviceConfig(): DeviceConfig {
-  if (!existsSync(DATA_PATH)) return {}
-  try {
-    return JSON.parse(readFileSync(DATA_PATH, 'utf-8')) as DeviceConfig
-  } catch {
-    return {}
-  }
-}
-
-function writeDeviceConfig(cfg: DeviceConfig): void {
-  const dir = join(process.cwd(), 'data')
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  writeFileSync(DATA_PATH, JSON.stringify(cfg, null, 2))
-}
-
-function domainOf(entityId: string): string {
-  return entityId.split('.')[0] ?? ''
-}
-
-let registry: ToolRegistry = { tools: [], devices: [] }
+/**
+ * MCP tools to expose to the LLM for voice commands.
+ * qwen3:8b works best with ≤20 tools. The full ha-mcp set (~89) drowns the model.
+ * All MCP tools remain callable via the text-extraction fallback — this only
+ * limits what appears in the Ollama `tools` parameter.
+ */
+const VOICE_MCP_TOOLS = new Set([
+  'ha_call_service',         // Control any entity (lights, switches, climate, media, etc.)
+  'ha_get_state',            // Read a single entity's state
+  'ha_get_states',           // Read multiple entity states
+  'ha_search_entities',      // Find entities by name, area, or domain
+  'ha_bulk_control',         // Control multiple entities at once
+  'ha_get_bulk_status',      // Status of multiple entities
+  'ha_config_list_areas',    // List rooms/areas
+  'ha_config_get_calendar_events', // Read calendar events
+  'ha_config_set_calendar_event',  // Create calendar events
+  'ha_get_overview',         // Home overview
+  'ha_get_history',          // Entity history
+  'ha_get_todo',             // Read todo/shopping lists
+  'ha_add_todo_item',        // Add to todo/shopping lists
+])
 
 export async function buildRegistry(): Promise<void> {
-  const [haDevices, haEntities, haAreas, states] = await Promise.all([
-    getDevices(),
-    getEntityRegistry(),
-    getAreas(),
-    getStates(),
-  ])
-
-  // Build lookup maps
-  const areaNameMap = new Map<string, string>(haAreas.map((a) => [a.area_id, a.name]))
-  const stateMap = new Map<string, string>(states.map((s) => [s.entity_id, s.state]))
-  const friendlyNameMap = new Map<string, string>(
-    states
-      .filter((s) => typeof s.attributes.friendly_name === 'string')
-      .map((s) => [s.entity_id, s.attributes.friendly_name as string]),
-  )
-
-  // Group controllable, non-disabled entities by device_id
-  const entitiesByDevice = new Map<string, ControlEntity[]>()
-  for (const entry of haEntities) {
-    if (entry.disabled_by !== null) continue
-    if (!entry.device_id) continue
-    const domain = domainOf(entry.entity_id)
-    if (!SUPPORTED_DOMAINS.has(domain)) continue
-
-    const list = entitiesByDevice.get(entry.device_id) ?? []
-    list.push({
-      entityId: entry.entity_id,
-      domain,
-      state: stateMap.get(entry.entity_id) ?? 'unknown',
-      friendlyName: friendlyNameMap.get(entry.entity_id) ?? entry.entity_id,
-    })
-    entitiesByDevice.set(entry.device_id, list)
-  }
-
-  const deviceConfig = readDeviceConfig()
-  const updatedConfig: DeviceConfig = {}
-  const devices: Device[] = []
-
-  for (const haDevice of haDevices) {
-    if (haDevice.disabled_by !== null) continue
-    const entities = entitiesByDevice.get(haDevice.id)
-    if (!entities || entities.length === 0) continue
-
-    const areaName = haDevice.area_id != null ? (areaNameMap.get(haDevice.area_id) ?? '') : ''
-    const existing = deviceConfig[haDevice.id]
-    // Default: interactable if the device has an area
-    const interactable = existing?.interactable ?? (haDevice.area_id != null && haDevice.area_id !== '')
-
-    updatedConfig[haDevice.id] = { interactable }
-
-    devices.push({
-      deviceId: haDevice.id,
-      name: haDevice.name_by_user ?? haDevice.name ?? haDevice.id,
-      area: areaName,
-      entities,
-      interactable,
-      ...(haDevice.manufacturer != null ? { manufacturer: haDevice.manufacturer } : {}),
-      ...(haDevice.model != null ? { model: haDevice.model } : {}),
-    })
-  }
-
-  writeDeviceConfig(updatedConfig)
-  registry = { tools: TOOL_DEFINITIONS, devices }
-
-  const interactableCount = devices.filter((d) => d.interactable).length
-  console.log(
-    `[registry] ${TOOL_DEFINITIONS.length} tools, ${devices.length} devices (${interactableCount} interactable)`,
-  )
-}
-
-export function getRegistry(): ToolRegistry {
-  return registry
-}
-
-/** Returns only interactable devices — used by the pipeline for system prompt + validation. */
-export function getInteractableRegistry(): ToolRegistry {
-  return {
-    tools: registry.tools,
-    devices: registry.devices.filter((d) => d.interactable),
+  await connectMcp()
+  // DEBUG: dump MCP tool schema sizes
+  const mcpTools = getMcpTools().filter((t) => VOICE_MCP_TOOLS.has(t.name))
+  const totalSize = JSON.stringify(mcpTools).length
+  console.log(`[registry] Voice MCP tools total schema size: ${(totalSize / 1024).toFixed(1)}KB`)
+  for (const t of mcpTools) {
+    const size = JSON.stringify(t.inputSchema).length
+    console.log(`[registry]   ${t.name}: ${(size / 1024).toFixed(1)}KB schema`)
   }
 }
 
-/** Persists the interactable flag for one device and updates the in-memory registry. */
-export function setDeviceInteractable(deviceId: string, interactable: boolean): boolean {
-  const idx = registry.devices.findIndex((d) => d.deviceId === deviceId)
-  if (idx === -1) return false
-
-  registry.devices = registry.devices.map((d) =>
-    d.deviceId === deviceId ? { ...d, interactable } : d,
-  )
-
-  const cfg = readDeviceConfig()
-  cfg[deviceId] = { interactable }
-  writeDeviceConfig(cfg)
-  return true
+export function isBuiltInTool(name: string): boolean {
+  return BUTLER_TOOLS.some((t) => t.name === name)
 }
 
-/** Returns true only if the entity belongs to an interactable device. Used by validator. */
-export function isValidEntity(entityId: string): boolean {
-  return registry.devices.some(
-    (d) => d.interactable && d.entities.some((e) => e.entityId === entityId),
-  )
-}
+/** Get the curated tool set for Ollama (voice-relevant MCP tools + butler tools). */
+export function getOllamaTools(): OllamaTool[] {
+  const mcpTools = getMcpTools()
+    .filter((t) => VOICE_MCP_TOOLS.has(t.name))
+    .map((t): OllamaTool => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      },
+    }))
 
-export function isValidTool(name: string): boolean {
-  return registry.tools.some((t) => t.name === name)
+  const butlerTools = BUTLER_TOOLS.map((t): OllamaTool => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    },
+  }))
+
+  return [...mcpTools, ...butlerTools]
 }

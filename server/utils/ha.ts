@@ -1,43 +1,6 @@
-export interface HaState {
-  entity_id: string
-  state: string
-  attributes: {
-    friendly_name?: string
-    [key: string]: unknown
-  }
-}
+import WebSocket from 'ws'
 
-export interface HaDevice {
-  id: string
-  name: string | null
-  name_by_user: string | null
-  area_id: string | null
-  manufacturer: string | null
-  model: string | null
-  disabled_by: string | null
-}
-
-export interface HaEntityEntry {
-  entity_id: string
-  device_id: string | null
-  disabled_by: string | null
-}
-
-export interface HaArea {
-  area_id: string
-  name: string
-}
-
-export interface HaServiceCallParams {
-  domain: string
-  service: string
-  entity_id?: string
-  service_data?: Record<string, unknown>
-}
-
-// ── REST helper (states + service calls) ─────────────────────────────────────
-
-async function haFetch<T>(path: string, options?: RequestInit): Promise<T> {
+export async function haFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${config.HA_URL}/api${path}`, {
     ...options,
     headers: {
@@ -55,84 +18,83 @@ async function haFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-// ── WebSocket helper (config registry calls) ──────────────────────────────────
-// The /api/config/*_registry/list REST endpoints were removed in modern HAOS.
-// The WebSocket API is the current supported approach for registry access.
+// ── Exposed entity list for LLM context ──────────────────────────────────────
 
-function haWsRequest<T>(type: string): Promise<T> {
+let entityCache = ''
+
+interface HaState {
+  entity_id: string
+  state: string
+  attributes: { friendly_name?: string }
+}
+
+/**
+ * One-shot HA WebSocket call: authenticate, send command, return result, close.
+ */
+async function haWsCall<T>(command: Record<string, unknown>): Promise<T> {
+  const wsUrl = config.HA_URL.replace(/^http/, 'ws') + '/api/websocket'
   return new Promise<T>((resolve, reject) => {
-    const wsUrl = config.HA_URL.replace(/^http/, 'ws') + '/api/websocket'
     const ws = new WebSocket(wsUrl)
-    const cmdId = 1
+    let msgId = 1
+    const timeout = setTimeout(() => { ws.close(); reject(new Error('HA WS timeout')) }, 10_000)
 
-    const timeout = setTimeout(() => {
-      ws.close()
-      reject(new Error(`HA WebSocket timeout for "${type}"`))
-    }, 10_000)
+    ws.on('message', (raw: Buffer) => {
+      const msg = JSON.parse(raw.toString()) as { type: string; id?: number; result?: T }
+      if (msg.type === 'auth_required') {
+        ws.send(JSON.stringify({ type: 'auth', access_token: config.HA_TOKEN }))
+      } else if (msg.type === 'auth_ok') {
+        ws.send(JSON.stringify({ id: msgId, ...command }))
+      } else if (msg.type === 'auth_invalid') {
+        clearTimeout(timeout); ws.close(); reject(new Error('HA WS auth failed'))
+      } else if (msg.type === 'result' && msg.id === msgId) {
+        clearTimeout(timeout); ws.close(); resolve(msg.result as T)
+      }
+    })
 
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data as string) as Record<string, unknown>
+    ws.on('error', (err: Error) => { clearTimeout(timeout); reject(err) })
+  })
+}
 
-      switch (msg['type']) {
-        case 'auth_required':
-          ws.send(JSON.stringify({ type: 'auth', access_token: config.HA_TOKEN }))
-          break
+/**
+ * Fetch entities exposed to the conversation assistant (Voice Assistants → Expose).
+ * Uses HA's WebSocket API — the only way to read exposure settings.
+ */
+export async function refreshEntityList(): Promise<void> {
+  try {
+    // Step 1: Get exposed entity IDs via WS
+    const exposed = await haWsCall<{ exposed_entities: Record<string, Record<string, boolean>> }>(
+      { type: 'homeassistant/expose_entity/list' },
+    )
 
-        case 'auth_ok':
-          ws.send(JSON.stringify({ id: cmdId, type }))
-          break
-
-        case 'auth_invalid':
-          clearTimeout(timeout)
-          ws.close()
-          reject(new Error('HA WebSocket authentication failed'))
-          break
-
-        case 'result':
-          if ((msg['id'] as number) === cmdId) {
-            clearTimeout(timeout)
-            ws.close()
-            if (msg['success']) {
-              resolve(msg['result'] as T)
-            } else {
-              reject(new Error(`HA WS "${type}" failed: ${JSON.stringify(msg['error'])}`))
-            }
-          }
-          break
+    const conversationEntityIds = new Set<string>()
+    for (const [entityId, assistants] of Object.entries(exposed.exposed_entities)) {
+      if (assistants['conversation']) {
+        conversationEntityIds.add(entityId)
       }
     }
 
-    ws.onerror = () => {
-      clearTimeout(timeout)
-      reject(new Error(`HA WebSocket connection failed (${wsUrl})`))
+    // Step 2: Get states for friendly names (REST — single call)
+    const states = await haFetch<HaState[]>('/states')
+    const stateMap = new Map<string, HaState>()
+    for (const s of states) {
+      stateMap.set(s.entity_id, s)
     }
-  })
+
+    // Step 3: Build entity list
+    const entries: string[] = []
+    for (const entityId of conversationEntityIds) {
+      const state = stateMap.get(entityId)
+      const name = state?.attributes.friendly_name ?? entityId
+      entries.push(`${entityId} "${name}"`)
+    }
+
+    entityCache = entries.join('\n')
+    console.log(`[ha] Exposed entity list: ${entries.length} entities`)
+  } catch (err) {
+    console.warn(`[ha] Failed to refresh entity list: ${err instanceof Error ? err.message : err}`)
+  }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-export async function getStates(): Promise<HaState[]> {
-  return haFetch<HaState[]>('/states')
-}
-
-export async function getDevices(): Promise<HaDevice[]> {
-  return haWsRequest<HaDevice[]>('config/device_registry/list')
-}
-
-export async function getEntityRegistry(): Promise<HaEntityEntry[]> {
-  return haWsRequest<HaEntityEntry[]>('config/entity_registry/list')
-}
-
-export async function getAreas(): Promise<HaArea[]> {
-  return haWsRequest<HaArea[]>('config/area_registry/list')
-}
-
-export async function callService(params: HaServiceCallParams): Promise<unknown> {
-  const { domain, service, entity_id, service_data } = params
-  const body = { entity_id, ...(service_data ?? {}) }
-  console.log(`[ha] POST /services/${domain}/${service} — body: ${JSON.stringify(body)}`)
-  return haFetch<unknown>(`/services/${domain}/${service}`, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
+export function getEntityList(): string {
+  return entityCache
 }

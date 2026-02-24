@@ -51,8 +51,9 @@ export default defineWebSocketHandler({
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
           return
         }
+        send(peer, { type: 'transcript', text: parsed.text })
         console.log('[ws] text command:', JSON.stringify(parsed.text))
-        processCommand(parsed.text, session, (event) => send(peer, event)).catch((err) => {
+        processCommand(parsed.text, session, (event) => send(peer, event), peer.id).catch((err) => {
           console.error('[ws] processCommand threw:', err)
           send(peer, { type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
           session.setState('IDLE')
@@ -64,13 +65,14 @@ export default defineWebSocketHandler({
         send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
         return
       }
-      void processAudio(buffer, session, (event) => send(peer, event))
+      void processAudio(buffer, session, (event) => send(peer, event), peer.id)
     }
   },
 
   close(peer) {
     sessions.get(peer.id)?.clearHistory()
     sessions.delete(peer.id)
+    clearTimersForPeer(peer.id)
   },
 
   error(peer, error) {

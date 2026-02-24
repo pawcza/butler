@@ -18,10 +18,11 @@ pnpm test:watch   # vitest watch mode
 Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles frontend.
 
 - `server/utils/` — backend logic (Nitro auto-imports these; no explicit imports needed in server files)
+- `server/utils/mcp.ts` — MCP client singleton connecting to ha-mcp for HA tool discovery and execution
 - `server/api/` — REST endpoints (file-based routing: `health.get.ts` → GET /api/health)
 - `server/routes/ws.ts` — WebSocket handler at /ws (Nitro native crossws)
-- `server/plugins/startup.ts` — runs buildRegistry() at server start
-- `pages/` — Vue pages (index.vue = voice interface, devices.vue = device manager)
+- `server/plugins/startup.ts` — connects to MCP server at server start
+- `pages/` — Vue pages (index.vue = voice interface)
 - `components/` — auto-imported Vue components
 - `composables/` — auto-imported Vue composables
 - `shared/types.ts` — TypeScript types shared between frontend and backend
@@ -30,10 +31,13 @@ Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles fro
 
 - Nitro auto-imports everything in `server/utils/` — no import statements needed between server files
 - `server/utils/config.ts` validates env vars with Zod at module load time; exits process on failure
-- Device interactability is stored in `data/devices.json` (gitignored); defaults to `true` if the device has an assigned area, `false` otherwise
-- Only interactable entities reach the LLM system prompt — non-interactable ones cannot be called even if hallucinated
+- HA tool discovery and execution goes through ha-mcp MCP server — butler-core is an MCP client
+- Ollama native tool calling (`tools` param in `/api/chat`) — no text-based JSON parsing
+- `server/utils/pipeline.ts` — agentic loop: LLM → tool calls → execute → feed results → LLM interprets
+- `server/utils/registry.ts` — merges MCP tools + butler tools into Ollama tool format
+- Butler tools (timers, news) are executed server-side; weather/calendar handled by ha-mcp
 - WebSocket IDLE guard: binary audio frames rejected if session state ≠ IDLE (no queue, user must wait)
-- System prompt is rebuilt on every LLM call so POST /api/devices/refresh takes effect immediately
+- System prompt is personality-only; tools are passed via Ollama `tools` API parameter
 
 ## TypeScript strictness
 
@@ -41,7 +45,6 @@ Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles fro
 
 - Never pass `undefined` for optional fields — omit the key with conditional spread `...(val !== undefined ? { key: val } : {})`
 - All array/record access must be null-checked (noUncheckedIndexedAccess)
-- Entity field is `entityId` (camelCase) in shared types; `entity_id` (snake_case) is HA's wire format only
 
 ## Environment variables
 
@@ -51,8 +54,9 @@ All read from process.env by `server/utils/config.ts`. Nuxt loads `.env` automat
 |-----|---------|---------|
 | `HA_URL` | — | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived access token |
+| `MCP_URL` | — | ha-mcp MCP server endpoint URL |
 | `OLLAMA_URL` | — | Ollama base URL |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | LLM model |
+| `OLLAMA_MODEL` | `qwen3:8b` | LLM model |
 | `WHISPER_URL` | — | Speaches URL (STT) |
 | `WHISPER_MODEL` | `whisper-1` | STT model |
 | `PIPER_URL` | — | Speaches URL (TTS) |

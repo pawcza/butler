@@ -1,36 +1,11 @@
-/** Shared types for the butler-core WebSocket event contract, HA device/tool registry, and session state. Imported by both server (Nitro) and client (Vue). */
+/** Shared types for the butler-core WebSocket event contract and session state. Imported by both server (Nitro) and client (Vue). */
 
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
-export interface Tool {
+export interface ButlerTool {
   name: string
   description: string
-  domain: string
-  service: string
-}
-
-/** A single controllable entity belonging to a Device. */
-export interface ControlEntity {
-  entityId: string
-  domain: string
-  state: string
-  friendlyName: string
-}
-
-/** A physical HA device with its controllable entities and interactability flag. */
-export interface Device {
-  deviceId: string
-  name: string
-  area: string            // resolved area name; empty string if device has no area
-  manufacturer?: string
-  model?: string
-  entities: ControlEntity[]
-  interactable: boolean
-}
-
-export interface ToolRegistry {
-  tools: Tool[]
-  devices: Device[]
+  parameters: Record<string, unknown>
 }
 
 export interface Message {
@@ -38,7 +13,24 @@ export interface Message {
   content: string
 }
 
-// WebSocket events: server → client
+// Ollama native tool calling types
+export interface OllamaToolCall {
+  function: { name: string; arguments: Record<string, unknown> }
+}
+
+export interface OllamaTool {
+  type: 'function'
+  function: { name: string; description: string; parameters: Record<string, unknown> }
+}
+
+export interface OllamaMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  tool_calls?: OllamaToolCall[]
+  tool_name?: string
+}
+
+// WebSocket events: server -> client
 export type ServerEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'transcript'; text: string }
@@ -48,7 +40,7 @@ export type ServerEvent =
   | { type: 'error'; message: string }
   | { type: 'pong' }
 
-// WebSocket messages: client → server (text frames only)
+// WebSocket messages: client -> server (text frames only)
 export type ClientMessage =
   | { type: 'ping' }
   | { type: 'clear_history' }

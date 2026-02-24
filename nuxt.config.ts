@@ -1,6 +1,8 @@
 export default defineNuxtConfig({
+  devServer: { port: 3001 },
   devtools: { enabled: true },
-  modules: ['@nuxtjs/tailwindcss'],
+  modules: ['@nuxtjs/tailwindcss', '@tresjs/nuxt'],
+  experimental: { appManifest: false },
   typescript: {
     strict: true,
     tsConfig: {
