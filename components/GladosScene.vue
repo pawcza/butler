@@ -162,8 +162,17 @@ const particleMat = new PointsMaterial({
 const cameraRef = shallowRef<PerspectiveCamera | null>(null)
 const ORBIT_RADIUS = 6
 const ORBIT_ELEVATION = -0.45   // slight low angle (negative = below center)
-const ORBIT_SPEED = 0.06        // radians per second — full loop ~105s
+const ORBIT_SPEED_MAP: Record<string, number> = {
+  IDLE: 0.06,
+  PASSIVE: 0.06,
+  HEARING: 0.08,
+  LISTENING: 0.10,
+  THINKING: 0.15,
+  EXECUTING: 0.18,
+  SPEAKING: 0.10,
+}
 let orbitAngle = 0
+let orbitSpeed = 0.06
 const lookTarget = new Vector3(0, 0.3, 0)
 
 // ---------- Mesh refs ----------
@@ -196,10 +205,12 @@ onBeforeRender(({ delta }) => {
   smoothedEnergy += (energyTarget - smoothedEnergy) * (1 - Math.exp(-12 * dt))
   const ae = smoothedEnergy
 
-  // Orbit camera
+  // Orbit camera — speed adapts to active state
   const cam = cameraRef.value
   if (cam) {
-    orbitAngle += ORBIT_SPEED * dt
+    const targetOrbitSpeed = ORBIT_SPEED_MAP[props.activeState] ?? 0.06
+    orbitSpeed += (targetOrbitSpeed - orbitSpeed) * (1 - Math.exp(-4 * dt))
+    orbitAngle += orbitSpeed * dt
     cam.position.x = Math.sin(orbitAngle) * ORBIT_RADIUS
     cam.position.z = Math.cos(orbitAngle) * ORBIT_RADIUS
     cam.position.y = ORBIT_ELEVATION * ORBIT_RADIUS
@@ -222,16 +233,27 @@ onBeforeRender(({ delta }) => {
     core.rotation.y += ap.coreSpin * dt
     core.rotation.x += ap.coreSpin * dt * 0.7
 
+    const isSpeaking = props.activeState === 'SPEAKING'
+
+    // Extra speech-driven spin during SPEAKING
+    if (isSpeaking) {
+      core.rotation.y += ae * 2.0 * dt
+    }
+
     // Distort — non-uniform scale wobble (3 out-of-phase sine waves)
     const d = ap.coreDistort
     const s = ap.coreScale + ae * 0.15
     if (d > 0.01) {
       const t = elapsed * 8
-      core.scale.set(
-        s + Math.sin(t * 2.3) * d,
-        s + Math.sin(t * 3.1 + 1.0) * d,
-        s + Math.sin(t * 1.7 + 2.0) * d,
-      )
+      const sx = s + Math.sin(t * 2.3) * d
+      const sy = s + Math.sin(t * 3.1 + 1.0) * d
+      const sz = s + Math.sin(t * 1.7 + 2.0) * d
+      if (isSpeaking) {
+        // Stretch Y with audio energy for a "speaking" mouth effect
+        core.scale.set(sx, sy + ae * 0.3, sz)
+      } else {
+        core.scale.set(sx, sy, sz)
+      }
     } else {
       // Smooth back to uniform scale
       core.scale.x += (s - core.scale.x) * 0.1
@@ -275,13 +297,14 @@ onBeforeRender(({ delta }) => {
     }
   }
 
-  // Rings
+  // Rings — boost speed with audio energy during SPEAKING
+  const ringSpeedMul = props.activeState === 'SPEAKING' ? 1 + ae * 0.5 : 1
   for (let i = 0; i < RING_COUNT; i++) {
     const ring = ringRefs[i]?.value
     if (!ring) continue
     const cfg = ringConfigs[i]
     if (!cfg) continue
-    ring.rotation.z += ap.ringSpeed * dt * cfg[2] * cfg[3]
+    ring.rotation.z += ap.ringSpeed * dt * cfg[2] * cfg[3] * ringSpeedMul
     ring.rotation.x = cfg[0]
     ring.rotation.y = cfg[1]
     const mat = ringMats[i]

@@ -3,6 +3,7 @@ import type { ServerEvent, SessionState } from '~/shared/types'
 export interface Exchange {
   heard: string
   reply: string
+  timestamp: number
 }
 
 /** Convert Silero VAD Float32Array (16kHz mono) to 16-bit PCM WAV ArrayBuffer. */
@@ -109,7 +110,7 @@ export function useVoice() {
         break
       case 'response':
         if (pendingTranscript) {
-          exchanges.value.push({ heard: pendingTranscript, reply: event.text })
+          exchanges.value.push({ heard: pendingTranscript, reply: event.text, timestamp: Date.now() })
           pendingTranscript = ''
           currentTranscript.value = ''
         }
