@@ -150,8 +150,9 @@ export function useVoice() {
 
   // ── Manual recording ─────────────────────────────────────────────────────────
 
-  async function startRecording(): Promise<void> {
+  async function startRecording(silent = false): Promise<void> {
     if (mediaRecorder?.state === 'recording') return
+    if (!silent) playAckSound()
     const gen = ++recordingGen
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -251,8 +252,7 @@ export function useVoice() {
     minWindowElapsed = false
 
     if (vad) vad.pause()
-    playAckSound()
-    await startRecording()
+    await startRecording(true)
 
     // Minimum grace window — don't close on silence before this elapses
     minWindowTimer = setTimeout(() => {
