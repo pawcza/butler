@@ -23,13 +23,13 @@ describe('SessionManager', () => {
     expect(h[0]?.content).toBe('hello')
   })
 
-  it('caps history at 20 messages, dropping oldest', () => {
+  it('caps history at 10 messages, dropping oldest', () => {
     const sm = new SessionManager(vi.fn())
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < 12; i++) {
       sm.addMessage({ role: 'user', content: `msg${i}` })
     }
     const h = sm.getHistory()
-    expect(h).toHaveLength(20)
+    expect(h).toHaveLength(10)
     expect(h[0]?.content).toBe('msg2')
   })
 

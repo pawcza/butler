@@ -1,6 +1,6 @@
 import type { SessionState, Message } from '~/shared/types'
 
-const MAX_MESSAGES = 20
+const MAX_MESSAGES = 10
 
 export class SessionManager {
   private state: SessionState = 'IDLE'

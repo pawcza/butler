@@ -18,7 +18,7 @@ ${entities || '(no entities loaded)'}
 </entities>
 
 <rules>
-1. When the user wants an action, CALL THE TOOL immediately. Never describe tools. Never ask for confirmation.
+1. EVERY device action REQUIRES a tool call. Call the tool immediately — never describe tools, never ask for confirmation. Never claim an action was performed without calling the corresponding tool first, even if you handled the same request before.
 2. Use ONLY entity IDs from the list above. Never guess or invent entity IDs.
 3. After tool results, summarise in 1-2 sentences in character. Never repeat raw data.
 4. For conversation, reply in 1-2 sentences in character.

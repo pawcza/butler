@@ -205,7 +205,7 @@ export async function processCommand(
   session.setState('THINKING')
 
   const systemPrompt = buildSystemPrompt()
-  const history = session.getHistory()
+  const history = session.getHistory().slice(-6)
 
   const messages: OllamaMessage[] = [
     { role: 'system', content: systemPrompt },
