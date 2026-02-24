@@ -33,7 +33,7 @@ cover: open_cover, close_cover, stop_cover
 5. For conversation, reply in 1-2 sentences in character.
 6. Never explain your reasoning. Output ONLY the final answer.
 7. Convert durations to seconds for timers. Resolve relative dates from current date/time.
-8. "all lights" or room names = call the tool for EVERY matching entity in that area.
+8. When controlling 2+ entities at once, use ha_bulk_control instead of ha_call_service. Never pass comma-separated entity IDs to ha_call_service.
 </rules>
 /no_think`
 }

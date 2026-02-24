@@ -47,7 +47,8 @@ const BUTLER_TOOLS: ButlerTool[] = [
  * limits what appears in the Ollama `tools` parameter.
  */
 const VOICE_MCP_TOOLS = new Set([
-  'ha_call_service',         // Control any entity (lights, switches, climate, media, etc.)
+  'ha_call_service',         // Control a single entity (lights, switches, climate, media, etc.)
+  'ha_bulk_control',         // Control multiple entities at once (e.g. "all lights")
   'ha_get_state',            // Read a single entity's state
   'ha_config_get_calendar_events', // Read calendar events
   'ha_config_set_calendar_event',  // Create calendar events
