@@ -10,6 +10,7 @@ const {
   clearHistory,
   passiveEnabled,
   isPassive,
+  isHearing,
 } = useVoice()
 
 const isRecording = ref(false)
@@ -25,6 +26,7 @@ let pressStartedAt = 0
 // Server LISTENING = transcribing audio (processing phase) → show as THINKING.
 // Local isRecording = actively capturing mic → show as LISTENING (blue).
 const activeState = computed(() => {
+  if (isHearing.value && isPassive.value && state.value === 'IDLE') return 'HEARING'
   if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
   if (isPassive.value && state.value === 'IDLE') return 'PASSIVE'
   if (state.value === 'LISTENING') return 'THINKING'
@@ -84,16 +86,18 @@ watch([exchanges, currentTranscript], async () => {
 
 const stateLabel: Record<string, string> = {
   IDLE: 'Hold to speak',
-  PASSIVE: 'Awaiting wake word…',
-  LISTENING: 'Listening…',
-  THINKING: 'Processing…',
-  EXECUTING: 'Executing…',
-  SPEAKING: 'Speaking…',
+  PASSIVE: 'Awaiting wake word\u2026',
+  HEARING: 'Hearing\u2026',
+  LISTENING: 'Listening\u2026',
+  THINKING: 'Processing\u2026',
+  EXECUTING: 'Executing\u2026',
+  SPEAKING: 'Speaking\u2026',
 }
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
     case 'PASSIVE': return 'text-ap-orange/60'
+    case 'HEARING': return 'text-yellow-300'
     case 'LISTENING': return 'text-ap-blue'
     case 'THINKING': return 'text-amber-400'
     case 'EXECUTING': return 'text-green-400'

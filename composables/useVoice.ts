@@ -67,6 +67,7 @@ export function useVoice() {
   // Passive listening
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
+  const isHearing = ref(false)
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -196,12 +197,16 @@ export function useVoice() {
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
     console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight, '| state:', state.value)
     if (vadPhase === 'passive') {
-      if (wakeCheckInFlight || state.value !== 'IDLE') return
+      if (wakeCheckInFlight || state.value !== 'IDLE') {
+        isHearing.value = false
+        return
+      }
       wakeCheckInFlight = true
       try {
         await checkWakeWord(audio)
       } finally {
         wakeCheckInFlight = false
+        isHearing.value = false
       }
     } else if (vadPhase === 'active' && minWindowElapsed) {
       triggerActiveStop()
@@ -294,6 +299,11 @@ export function useVoice() {
         minSpeechMs: 30,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
+        onSpeechStart: () => {
+          if (vadPhase === 'passive' && state.value === 'IDLE') {
+            isHearing.value = true
+          }
+        },
         onSpeechEnd: (audio: Float32Array) => {
           void handleSpeechEnd(audio)
         },
@@ -360,6 +370,7 @@ export function useVoice() {
     error,
     passiveEnabled,
     isPassive,
+    isHearing,
     startRecording,
     stopRecording,
     sendPing,
