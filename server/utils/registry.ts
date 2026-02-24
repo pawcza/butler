@@ -49,37 +49,22 @@ const BUTLER_TOOLS: ButlerTool[] = [
 const VOICE_MCP_TOOLS = new Set([
   'ha_call_service',         // Control any entity (lights, switches, climate, media, etc.)
   'ha_get_state',            // Read a single entity's state
-  'ha_get_states',           // Read multiple entity states
-  'ha_search_entities',      // Find entities by name, area, or domain
-  'ha_bulk_control',         // Control multiple entities at once
-  'ha_get_bulk_status',      // Status of multiple entities
-  'ha_config_list_areas',    // List rooms/areas
   'ha_config_get_calendar_events', // Read calendar events
   'ha_config_set_calendar_event',  // Create calendar events
-  'ha_get_overview',         // Home overview
-  'ha_get_history',          // Entity history
   'ha_get_todo',             // Read todo/shopping lists
   'ha_add_todo_item',        // Add to todo/shopping lists
 ])
 
+let cachedTools: OllamaTool[] = []
+
 export async function buildRegistry(): Promise<void> {
   await connectMcp()
-  // DEBUG: dump MCP tool schema sizes
-  const mcpTools = getMcpTools().filter((t) => VOICE_MCP_TOOLS.has(t.name))
-  const totalSize = JSON.stringify(mcpTools).length
-  console.log(`[registry] Voice MCP tools total schema size: ${(totalSize / 1024).toFixed(1)}KB`)
-  for (const t of mcpTools) {
-    const size = JSON.stringify(t.inputSchema).length
-    console.log(`[registry]   ${t.name}: ${(size / 1024).toFixed(1)}KB schema`)
-  }
+  cachedTools = buildToolArray()
+  const totalSize = JSON.stringify(cachedTools).length
+  console.log(`[registry] ${cachedTools.length} voice tools cached (${(totalSize / 1024).toFixed(1)}KB)`)
 }
 
-export function isBuiltInTool(name: string): boolean {
-  return BUTLER_TOOLS.some((t) => t.name === name)
-}
-
-/** Get the curated tool set for Ollama (voice-relevant MCP tools + butler tools). */
-export function getOllamaTools(): OllamaTool[] {
+function buildToolArray(): OllamaTool[] {
   const mcpTools = getMcpTools()
     .filter((t) => VOICE_MCP_TOOLS.has(t.name))
     .map((t): OllamaTool => ({
@@ -101,4 +86,12 @@ export function getOllamaTools(): OllamaTool[] {
   }))
 
   return [...mcpTools, ...butlerTools]
+}
+
+export function isBuiltInTool(name: string): boolean {
+  return BUTLER_TOOLS.some((t) => t.name === name)
+}
+
+export function getOllamaTools(): OllamaTool[] {
+  return cachedTools
 }
