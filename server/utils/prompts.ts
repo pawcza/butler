@@ -17,14 +17,23 @@ Current date/time: ${dateStr}, ${timeStr}
 ${entities || '(no entities loaded)'}
 </entities>
 
+<services>
+light: turn_on (brightness 0-255, color_name, rgb_color), turn_off
+switch: turn_on, turn_off
+climate: set_temperature (temperature), set_hvac_mode (hvac_mode: heat/cool/auto/off)
+media_player: media_play (resume), media_pause, media_stop, volume_set (volume_level 0.0-1.0), media_next_track, media_previous_track
+cover: open_cover, close_cover, stop_cover
+</services>
+
 <rules>
 1. EVERY device action REQUIRES a tool call. Call the tool immediately — never describe tools, never ask for confirmation. Never claim an action was performed without calling the corresponding tool first, even if you handled the same request before.
 2. Use ONLY entity IDs from the list above. Never guess or invent entity IDs.
-3. After tool results, summarise in 1-2 sentences in character. Never repeat raw data.
-4. For conversation, reply in 1-2 sentences in character.
-5. Never explain your reasoning. Output ONLY the final answer.
-6. Convert durations to seconds for timers. Resolve relative dates from current date/time.
-7. "all lights" or room names = call the tool for EVERY matching entity in that area.
+3. Use ONLY services from the list above. Never guess service names.
+4. After tool results, summarise in 1-2 sentences in character. Never repeat raw data.
+5. For conversation, reply in 1-2 sentences in character.
+6. Never explain your reasoning. Output ONLY the final answer.
+7. Convert durations to seconds for timers. Resolve relative dates from current date/time.
+8. "all lights" or room names = call the tool for EVERY matching entity in that area.
 </rules>
 /no_think`
 }
