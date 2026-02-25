@@ -3,7 +3,7 @@ type DisplayState = 'IDLE' | 'PASSIVE' | 'HEARING' | 'LISTENING' | 'THINKING' | 
 
 interface RGB { r: number; g: number; b: number }
 
-/** Params the render loop (GladosScene.vue) consumes — all numeric for lerping. */
+/** Params the render loop (ButlerScene.vue) consumes — all numeric for lerping. */
 export interface AvatarParams {
   ringSpeed: number
   coreIntensity: number

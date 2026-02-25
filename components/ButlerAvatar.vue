@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { loadGsap, getGsap } from '~/utils/gsap'
+
 const props = withDefaults(defineProps<{
   activeState: string
   audioEnergy?: number
+  micEnergy?: number
 }>(), {
   audioEnergy: 0,
+  micEnergy: 0,
 })
 
 const emit = defineEmits<{
@@ -22,22 +26,28 @@ const STATE_COLORS: Record<string, string> = {
   SPEAKING: '#a633ff',
 }
 
-const cursorX = ref(0)
-const cursorY = ref(0)
+const cursorEl = ref<HTMLElement | null>(null)
 const cursorVisible = ref(false)
 const pressing = ref(false)
+let gsapReady = false
 
 // Hide custom cursor on touch devices
 const isTouch = ref(false)
-onMounted(() => {
+onMounted(async () => {
   isTouch.value = window.matchMedia('(pointer: coarse)').matches
+  if (isTouch.value) return
+  await loadGsap()
+  gsapReady = true
 })
 
 const cursorColor = computed(() => STATE_COLORS[props.activeState] ?? '#737373')
 
 function onMouseMove(e: MouseEvent) {
-  cursorX.value = e.clientX
-  cursorY.value = e.clientY
+  // gsap.set() — instant DOM update, no interpolation lag, bypasses Vue reactivity
+  if (gsapReady && cursorEl.value) {
+    const gsap = getGsap()
+    if (gsap) gsap.set(cursorEl.value, { x: e.clientX - 12, y: e.clientY - 12 })
+  }
   if (!cursorVisible.value) cursorVisible.value = true
 }
 
@@ -48,13 +58,23 @@ function onMouseLeave() {
 }
 
 function onPointerDown(e: Event) {
+  // Only respond to left-click — let right-click show native context menu
+  if (e instanceof MouseEvent && e.button !== 0) return
   pressing.value = true
   emit('pressStart', e)
+  const gsap = getGsap()
+  if (gsap && cursorEl.value) {
+    gsap.to(cursorEl.value.firstElementChild!, { scale: 0.75, duration: 0.1 })
+  }
 }
 
 function onPointerUp() {
   pressing.value = false
   emit('pressEnd')
+  const gsap = getGsap()
+  if (gsap && cursorEl.value) {
+    gsap.to(cursorEl.value.firstElementChild!, { scale: 1, duration: 0.2, ease: 'back.out(2)' })
+  }
 }
 </script>
 
@@ -74,20 +94,18 @@ function onPointerUp() {
       window-size
       :power-preference="'high-performance'"
     >
-      <GladosScene :active-state="props.activeState" :audio-energy="props.audioEnergy" />
+      <ButlerScene :active-state="props.activeState" :audio-energy="props.audioEnergy" :mic-energy="props.micEnergy" />
     </TresCanvas>
 
-    <!-- Custom cursor ring — hidden on touch devices -->
+    <!-- Custom cursor ring — hidden on touch devices, positioned by GSAP quickTo -->
     <div
-      v-if="cursorVisible && !isTouch"
+      v-if="!isTouch"
+      ref="cursorEl"
       class="pointer-events-none fixed left-0 top-0 z-50"
-      :style="{
-        transform: `translate(${cursorX - 12}px, ${cursorY - 12}px)`,
-      }"
+      :style="{ opacity: cursorVisible ? 1 : 0 }"
     >
       <div
-        class="h-6 w-6 rounded-full transition-transform duration-75"
-        :class="pressing ? 'scale-75' : 'scale-100'"
+        class="h-6 w-6 rounded-full"
         :style="{
           border: `1.5px solid ${cursorColor}`,
           boxShadow: `0 0 8px ${cursorColor}, 0 0 16px ${cursorColor}40`,

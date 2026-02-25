@@ -2,6 +2,14 @@
 
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
+export type Personality = 'glados' | 'butler' | 'professional' | 'flirty'
+
+export interface PersonalityInfo {
+  id: Personality
+  name: string
+  description: string
+}
+
 export interface ButlerTool {
   name: string
   description: string
@@ -35,13 +43,25 @@ export type ServerEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'transcript'; text: string }
   | { type: 'response'; text: string }
+  /** Streaming response tokens from the final LLM call */
+  | { type: 'response_start' }
+  | { type: 'response_delta'; text: string }
+  | { type: 'response_end'; text: string }
   /** data is a base64-encoded audio buffer; decode with atob() on the client */
   | { type: 'audio'; data: string; format: 'mp3' | 'wav' }
   | { type: 'error'; message: string }
   | { type: 'pong' }
+
+// TTS model info returned by /api/tts/voices
+export interface TtsModelInfo {
+  id: string
+  voices: readonly string[]
+}
 
 // WebSocket messages: client -> server (text frames only)
 export type ClientMessage =
   | { type: 'ping' }
   | { type: 'clear_history' }
   | { type: 'command'; text: string }
+  | { type: 'set_voice'; model: string; voice: string }
+  | { type: 'set_personality'; personality: Personality }

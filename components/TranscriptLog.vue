@@ -33,7 +33,7 @@ watch(
         {{ ex.heard }}
       </div>
       <div class="text-gray-300 text-sm pl-4 border-l border-ap-border">
-        <span class="text-ap-orange text-xs uppercase tracking-wider mr-2">GLaDOS</span>
+        <span class="text-ap-orange text-xs uppercase tracking-wider mr-2">BUTLER</span>
         {{ ex.reply }}
       </div>
     </div>

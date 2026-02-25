@@ -20,8 +20,10 @@ import { BloomPmndrs, EffectComposerPmndrs } from '@tresjs/post-processing'
 const props = withDefaults(defineProps<{
   activeState: string
   audioEnergy?: number
+  micEnergy?: number
 }>(), {
   audioEnergy: 0,
+  micEnergy: 0,
 })
 
 const activeStateRef = toRef(props, 'activeState')
@@ -191,6 +193,7 @@ const tmpColor = new Color()
 let elapsed = 0
 let ringsSeeded = false
 let smoothedEnergy = 0
+let smoothedMicEnergy = 0
 
 const bloomIntensity = ref(ap.bloomIntensity)
 
@@ -204,6 +207,14 @@ onBeforeRender(({ delta }) => {
   const energyTarget = props.audioEnergy
   smoothedEnergy += (energyTarget - smoothedEnergy) * (1 - Math.exp(-12 * dt))
   const ae = smoothedEnergy
+
+  // Smooth mic energy for HEARING/LISTENING states
+  const micTarget = props.micEnergy
+  smoothedMicEnergy += (micTarget - smoothedMicEnergy) * (1 - Math.exp(-12 * dt))
+  const me = smoothedMicEnergy
+
+  const isHearing = props.activeState === 'HEARING'
+  const isListening = props.activeState === 'LISTENING'
 
   // Orbit camera — speed adapts to active state
   const cam = cameraRef.value
@@ -221,10 +232,11 @@ onBeforeRender(({ delta }) => {
 
   elapsed += dt
 
-  // Core — color + audio energy boost
+  // Core — color + audio/mic energy boost
   coreMat.emissive.copy(tmpColor)
   coreMat.color.copy(tmpColor)
-  coreMat.emissiveIntensity = ap.coreIntensity + ae * 0.5
+  const micIntensityBoost = isHearing ? me * 0.15 : isListening ? me * 0.3 : 0
+  coreMat.emissiveIntensity = ap.coreIntensity + ae * 0.5 + micIntensityBoost
 
   // Core — spin, scale, distortion
   const core = coreRef.value
@@ -240,9 +252,15 @@ onBeforeRender(({ delta }) => {
       core.rotation.y += ae * 2.0 * dt
     }
 
+    // Gentle attentive spin during LISTENING — the avatar is paying attention
+    if (isListening) {
+      core.rotation.y += me * 0.8 * dt
+    }
+
     // Distort — non-uniform scale wobble (3 out-of-phase sine waves)
     const d = ap.coreDistort
-    const s = ap.coreScale + ae * 0.15
+    const micScaleBoost = isHearing ? me * 0.05 : isListening ? me * 0.10 : 0
+    const s = ap.coreScale + ae * 0.15 + micScaleBoost
     if (d > 0.01) {
       const t = elapsed * 8
       const sx = s + Math.sin(t * 2.3) * d
@@ -251,6 +269,9 @@ onBeforeRender(({ delta }) => {
       if (isSpeaking) {
         // Stretch Y with audio energy for a "speaking" mouth effect
         core.scale.set(sx, sy + ae * 0.3, sz)
+      } else if (isListening) {
+        // Subtle Y-pulse during LISTENING — "breathing" in the user's voice
+        core.scale.set(sx, sy + me * 0.12, sz)
       } else {
         core.scale.set(sx, sy, sz)
       }
@@ -297,8 +318,9 @@ onBeforeRender(({ delta }) => {
     }
   }
 
-  // Rings — boost speed with audio energy during SPEAKING
-  const ringSpeedMul = props.activeState === 'SPEAKING' ? 1 + ae * 0.5 : 1
+  // Rings — boost speed with audio/mic energy
+  const micRingBoost = isHearing ? me * 0.15 : isListening ? me * 0.3 : 0
+  const ringSpeedMul = props.activeState === 'SPEAKING' ? 1 + ae * 0.5 : 1 + micRingBoost
   for (let i = 0; i < RING_COUNT; i++) {
     const ring = ringRefs[i]?.value
     if (!ring) continue
@@ -328,17 +350,19 @@ onBeforeRender(({ delta }) => {
     panelMat.opacity = 0.15 + ap.panelFlipping * 0.25
   }
 
-  // Particles
+  // Particles — modulated by audio energy (SPEAKING) and mic energy (HEARING/LISTENING)
+  const micParticleBoost = isHearing ? me * 0.1 : isListening ? me * 0.2 : 0
   const pts = particlesRef.value
   if (pts) {
     pts.rotation.y += ap.particleSpeed * dt * 0.5
     pts.rotation.x += ap.particleSpeed * dt * 0.2
     particleMat.color.copy(tmpColor)
-    particleMat.opacity = ap.particleOpacity + ae * 0.3
+    particleMat.opacity = ap.particleOpacity + ae * 0.3 + micParticleBoost
   }
 
-  // Bloom — modulated by audio energy
-  bloomIntensity.value = ap.bloomIntensity + ae * 0.3
+  // Bloom — modulated by audio energy (SPEAKING) and mic energy (HEARING/LISTENING)
+  const micBloomBoost = isHearing ? me * 0.12 : isListening ? me * 0.2 : 0
+  bloomIntensity.value = ap.bloomIntensity + ae * 0.3 + micBloomBoost
 })
 </script>
 

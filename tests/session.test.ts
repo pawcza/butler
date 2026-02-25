@@ -47,4 +47,17 @@ describe('SessionManager', () => {
     sm.clearHistory()
     expect(sm.getHistory()).toHaveLength(0)
   })
+
+  it('defaults personality to glados', () => {
+    const sm = new SessionManager(vi.fn())
+    expect(sm.getPersonality()).toBe('glados')
+  })
+
+  it('setPersonality updates and getPersonality returns it', () => {
+    const sm = new SessionManager(vi.fn())
+    sm.setPersonality('butler')
+    expect(sm.getPersonality()).toBe('butler')
+    sm.setPersonality('flirty')
+    expect(sm.getPersonality()).toBe('flirty')
+  })
 })

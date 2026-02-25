@@ -1,4 +1,9 @@
-export async function synthesize(text: string): Promise<Buffer> {
+export interface TtsOptions {
+  model?: string
+  voice?: string
+}
+
+export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffer> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
@@ -8,9 +13,9 @@ export async function synthesize(text: string): Promise<Buffer> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: config.PIPER_MODEL,
+        model: opts?.model ?? config.PIPER_MODEL,
         input: text,
-        voice: config.PIPER_VOICE,
+        voice: opts?.voice ?? config.PIPER_VOICE,
         response_format: config.PIPER_RESPONSE_FORMAT,
         speed: 1,
         stream_format: 'audio',

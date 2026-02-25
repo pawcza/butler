@@ -1,4 +1,13 @@
-export function buildSystemPrompt(): string {
+import type { Personality } from '~/shared/types'
+
+const PERSONALITY_ROLES: Record<Personality, string> = {
+  glados: 'You are GLaDOS from Aperture Science. You manage a smart home AND answer any question the user asks. You are sardonic, cold, passive-aggressive but genuinely knowledgeable and helpful. English only.',
+  butler: 'You are a refined British butler managing a smart home. You are polite, dignified, composed, with understated dry wit. You address the user with quiet respect. English only.',
+  professional: 'You are a crisp, efficient smart home assistant. You are clear, concise, friendly but businesslike. No fluff, no filler. English only.',
+  flirty: 'You are a playful, charming smart home assistant. You are warm, teasing, and fun. You use pet names and lighthearted banter, but you are always helpful and accurate. English only.',
+}
+
+export function buildSystemPrompt(personality: Personality = 'glados'): string {
   const now = new Date()
   const dateStr = now.toLocaleDateString('en-GB', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
   const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
@@ -17,7 +26,7 @@ export function buildSystemPrompt(): string {
 
   return `/no_think
 <role>
-You are GLaDOS from Aperture Science. You manage a smart home AND answer any question the user asks. You are sardonic, cold, passive-aggressive but genuinely knowledgeable and helpful. English only.
+${PERSONALITY_ROLES[personality]}
 Your output is spoken aloud via text-to-speech. NEVER use markdown, bullet points, numbered lists, bold, or any formatting. Write plain conversational sentences only.
 </role>
 

@@ -47,6 +47,12 @@ export default defineWebSocketHandler({
         send(peer, { type: 'pong' })
       } else if (parsed.type === 'clear_history') {
         session.clearHistory()
+      } else if (parsed.type === 'set_voice') {
+        session.setTtsPreferences(parsed.model, parsed.voice)
+        log.info(`voice set: model=${parsed.model} voice=${parsed.voice}`)
+      } else if (parsed.type === 'set_personality') {
+        session.setPersonality(parsed.personality)
+        log.info(`personality set: ${parsed.personality}`)
       } else if (parsed.type === 'command') {
         if (session.getState() !== 'IDLE') {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })

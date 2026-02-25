@@ -6,10 +6,9 @@ const schema = z.object({
   OLLAMA_URL: z.string().url('OLLAMA_URL must be a valid URL'),
   OLLAMA_MODEL: z.string().min(1).default('qwen3:14b'),
   WHISPER_URL: z.string().url('WHISPER_URL must be a valid URL'),
-  WHISPER_MODEL: z.string().min(1).default('whisper-1'),
   PIPER_URL: z.string().url('PIPER_URL must be a valid URL'),
-  PIPER_MODEL: z.string().min(1).default('Stoned-Code/piper-en_US-glados-medium'),
-  PIPER_VOICE: z.string().min(1).default('glados'),
+  PIPER_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
+  PIPER_VOICE: z.string().min(1).default('af_heart'),
   PIPER_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
 })
 

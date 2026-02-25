@@ -1,4 +1,11 @@
-import type { ServerEvent, SessionState } from '~/shared/types'
+import type { ServerEvent, SessionState, TtsModelInfo, Personality, PersonalityInfo } from '~/shared/types'
+
+export const PERSONALITIES: PersonalityInfo[] = [
+  { id: 'glados', name: 'GLaDOS', description: 'Sardonic, cold, passive-aggressive' },
+  { id: 'butler', name: 'Butler', description: 'Refined, polite British butler' },
+  { id: 'professional', name: 'Professional', description: 'Crisp, efficient, no-nonsense' },
+  { id: 'flirty', name: 'Flirty', description: 'Playful, charming, teasing' },
+]
 
 export interface Exchange {
   heard: string
@@ -57,10 +64,63 @@ let audioCtx: AudioContext | null = null
 let pendingTranscript = ''
 let isPlayingAudio = false
 let recordingGen = 0
+let lingerTimer: ReturnType<typeof setTimeout> | null = null
+let userBubbleTimer: ReturnType<typeof setTimeout> | null = null
 
 // Module-level audio energy — shared across composable re-invocations
 const audioEnergy = ref(0)
 let analyserRafId = 0
+
+// Module-level mic energy — real-time input level during HEARING/LISTENING
+const micEnergy = ref(0)
+let micAnalyserCtx: AudioContext | null = null
+let micAnalyserNode: AnalyserNode | null = null
+let micSourceNode: MediaStreamAudioSourceNode | null = null
+let micRafId = 0
+
+function startMicEnergyLoop(): void {
+  if (!micAnalyserNode) return
+  const dataArray = new Uint8Array(micAnalyserNode.frequencyBinCount)
+  function updateMicEnergy(): void {
+    if (!micAnalyserNode) return
+    micAnalyserNode.getByteFrequencyData(dataArray)
+    let sum = 0
+    for (let i = 0; i < dataArray.length; i++) {
+      const v = dataArray[i] ?? 0
+      sum += v * v
+    }
+    micEnergy.value = Math.sqrt(sum / dataArray.length) / 128
+    micRafId = requestAnimationFrame(updateMicEnergy)
+  }
+  updateMicEnergy()
+}
+
+function stopMicEnergy(): void {
+  if (micRafId) {
+    cancelAnimationFrame(micRafId)
+    micRafId = 0
+  }
+  micEnergy.value = 0
+  if (micSourceNode) {
+    micSourceNode.disconnect()
+    micSourceNode = null
+  }
+  if (micAnalyserNode) {
+    micAnalyserNode.disconnect()
+    micAnalyserNode = null
+  }
+}
+
+function connectMicAnalyser(stream: MediaStream): void {
+  if (!micAnalyserCtx) micAnalyserCtx = new AudioContext()
+  stopMicEnergy()
+  micAnalyserNode = micAnalyserCtx.createAnalyser()
+  micAnalyserNode.fftSize = 256
+  micSourceNode = micAnalyserCtx.createMediaStreamSource(stream)
+  micSourceNode.connect(micAnalyserNode)
+  // Do NOT connect analyser to destination — we don't want to hear the mic
+  startMicEnergyLoop()
+}
 
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
@@ -68,6 +128,14 @@ export function useVoice() {
   const exchanges = ref<Exchange[]>([])
   const currentTranscript = ref('')
   const error = ref<string | null>(null)
+
+  // Streaming LLM response
+  const streamingText = ref('')
+  const isStreaming = ref(false)
+
+  // Bubble overlay — explicit visibility flag (texts cleared on next interaction, not during fade-out)
+  const bubbleVisible = ref(false)
+  const bubbleUserText = ref('')
 
   // Passive listening
   const passiveEnabled = ref(true)
@@ -77,13 +145,45 @@ export function useVoice() {
   // True between wake word detection and first server state event — masks STT latency
   const isProcessingWake = ref(false)
 
+  // TTS voice selection
+  const availableModels = ref<TtsModelInfo[]>([])
+  const selectedModel = ref('')
+  const selectedVoice = ref('')
+
+  // Personality selection
+  const selectedPersonality = ref<Personality>(
+    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-personality') as Personality | null) || 'glados',
+  )
+
+  function startLingerTimer(): void {
+    if (lingerTimer !== null) return
+    lingerTimer = setTimeout(() => {
+      lingerTimer = null
+      bubbleVisible.value = false
+    }, 3000)
+  }
+
   // ── WebSocket ────────────────────────────────────────────────────────────────
 
   function connect(): void {
+    // Close stale connection (HMR reload, re-mount, etc.)
+    if (ws) {
+      ws.onclose = null // prevent isConnected flip
+      ws.close()
+      ws = null
+    }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
 
-    ws.onopen = () => { isConnected.value = true }
+    ws.onopen = () => {
+      isConnected.value = true
+      // Re-send stored voice preference on (re)connect
+      if (selectedModel.value && selectedVoice.value) {
+        ws?.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
+      }
+      // Re-send stored personality on (re)connect
+      ws?.send(JSON.stringify({ type: 'set_personality', personality: selectedPersonality.value }))
+    }
     ws.onclose = () => { isConnected.value = false }
     ws.onerror = () => { error.value = 'WebSocket connection failed' }
     ws.onmessage = (ev: MessageEvent) => handleMessage(ev)
@@ -103,10 +203,48 @@ export function useVoice() {
         // Don't go IDLE while audio is still playing — stay in SPEAKING
         if (event.state === 'IDLE' && isPlayingAudio) break
         state.value = event.state
+        // Start linger when IDLE arrives without audio (e.g. TTS failed)
+        if (event.state === 'IDLE' && bubbleVisible.value && !isPlayingAudio) {
+          startLingerTimer()
+        }
         break
       case 'transcript':
         pendingTranscript = event.text
         currentTranscript.value = event.text
+        // Show user bubble — clear stale assistant text from previous interaction
+        streamingText.value = ''
+        bubbleUserText.value = event.text
+        bubbleVisible.value = true
+        // Auto-dismiss if no response follows (noise/discarded transcript)
+        if (userBubbleTimer !== null) clearTimeout(userBubbleTimer)
+        userBubbleTimer = setTimeout(() => {
+          userBubbleTimer = null
+          bubbleUserText.value = ''
+          bubbleVisible.value = false
+        }, 3000)
+        break
+      case 'response_start':
+        // Cancel user bubble auto-dismiss — a response is coming
+        if (userBubbleTimer !== null) {
+          clearTimeout(userBubbleTimer)
+          userBubbleTimer = null
+        }
+        // Cancel any pending linger timer — new response replaces old
+        if (lingerTimer !== null) {
+          clearTimeout(lingerTimer)
+          lingerTimer = null
+        }
+        streamingText.value = ''
+        isStreaming.value = true
+        bubbleVisible.value = true
+        break
+      case 'response_delta':
+        streamingText.value += event.text
+        break
+      case 'response_end':
+        isStreaming.value = false
+        // Empty text = server discarded (multi-round tool call) — reset
+        if (!event.text) streamingText.value = ''
         break
       case 'response':
         if (pendingTranscript) {
@@ -128,6 +266,11 @@ export function useVoice() {
   // ── Audio playback ────────────────────────────────────────────────────────────
 
   async function playAudio(base64: string, _format: 'mp3' | 'wav'): Promise<void> {
+    // Cancel any pending linger timer — new audio replaces old linger
+    if (lingerTimer !== null) {
+      clearTimeout(lingerTimer)
+      lingerTimer = null
+    }
     // Set flag BEFORE any async work — the server IDLE event can arrive
     // while decodeAudioData is running and must be blocked.
     isPlayingAudio = true
@@ -164,6 +307,7 @@ export function useVoice() {
         audioEnergy.value = 0
         isPlayingAudio = false
         state.value = 'IDLE'
+        startLingerTimer()
       }
       source.start()
     } catch {
@@ -171,6 +315,7 @@ export function useVoice() {
       audioEnergy.value = 0
       isPlayingAudio = false
       state.value = 'IDLE'
+      startLingerTimer()
     }
   }
 
@@ -201,6 +346,7 @@ export function useVoice() {
       mediaRecorder = new MediaRecorder(stream)
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
       mediaRecorder.start()
+      connectMicAnalyser(stream)
     } catch (err) {
       error.value = `Microphone access denied: ${err instanceof Error ? err.message : err}`
       setTimeout(() => { error.value = null }, 5000)
@@ -209,6 +355,7 @@ export function useVoice() {
 
   function stopRecording(discard = false): void {
     recordingGen++ // invalidate any in-flight startRecording
+    stopMicEnergy()
     if (!mediaRecorder || mediaRecorder.state === 'inactive') return
     if (discard) {
       mediaRecorder.onstop = null
@@ -236,6 +383,7 @@ export function useVoice() {
     if (vadPhase === 'passive') {
       if (wakeCheckInFlight || state.value !== 'IDLE') {
         isHearing.value = false
+        stopMicEnergy()
         return
       }
       wakeCheckInFlight = true
@@ -244,6 +392,7 @@ export function useVoice() {
       } finally {
         wakeCheckInFlight = false
         isHearing.value = false
+        stopMicEnergy()
       }
     } else if (vadPhase === 'active' && minWindowElapsed) {
       triggerActiveStop()
@@ -341,6 +490,10 @@ export function useVoice() {
         onSpeechStart: () => {
           if (vadPhase === 'passive' && state.value === 'IDLE') {
             isHearing.value = true
+            // Tap into the VAD's mic stream for real-time energy visualization
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const vadStream = (vad as any)?._stream as MediaStream | undefined
+            if (vadStream) connectMicAnalyser(vadStream)
           }
         },
         onSpeechEnd: (audio: Float32Array) => {
@@ -361,6 +514,7 @@ export function useVoice() {
 
   function stopPassiveListening(): void {
     if (!vad) return
+    stopMicEnergy()
     vad.pause()
     vad.destroy()
     vad = null
@@ -380,6 +534,7 @@ export function useVoice() {
 
   onMounted(() => {
     connect()
+    void fetchVoiceModels()
     if (passiveEnabled.value) void startPassiveListening()
   })
 
@@ -387,6 +542,42 @@ export function useVoice() {
     ws?.close()
     stopPassiveListening()
   })
+
+  // ── TTS voice selection ──────────────────────────────────────────────────────
+
+  async function fetchVoiceModels(): Promise<void> {
+    try {
+      const data = await $fetch<{ models: TtsModelInfo[]; defaults: { model: string; voice: string } }>('/api/tts/voices')
+      availableModels.value = data.models
+
+      // Init from localStorage or server defaults
+      const storedModel = localStorage.getItem('butler-tts-model')
+      const storedVoice = localStorage.getItem('butler-tts-voice')
+      if (storedModel && storedVoice) {
+        selectedModel.value = storedModel
+        selectedVoice.value = storedVoice
+      } else {
+        selectedModel.value = data.defaults.model
+        selectedVoice.value = data.defaults.voice
+      }
+    } catch {
+      // Non-critical — voice selector just stays empty
+    }
+  }
+
+  function setVoice(model: string, voice: string): void {
+    selectedModel.value = model
+    selectedVoice.value = voice
+    localStorage.setItem('butler-tts-model', model)
+    localStorage.setItem('butler-tts-voice', voice)
+    ws?.send(JSON.stringify({ type: 'set_voice', model, voice }))
+  }
+
+  function setPersonality(id: Personality): void {
+    selectedPersonality.value = id
+    localStorage.setItem('butler-personality', id)
+    ws?.send(JSON.stringify({ type: 'set_personality', personality: id }))
+  }
 
   // ── Misc ──────────────────────────────────────────────────────────────────────
 
@@ -407,14 +598,25 @@ export function useVoice() {
     exchanges,
     currentTranscript,
     error,
+    streamingText: readonly(streamingText),
+    isStreaming: readonly(isStreaming),
+    bubbleVisible: readonly(bubbleVisible),
+    bubbleUserText: readonly(bubbleUserText),
     passiveEnabled,
     isPassive,
     isHearing,
     isProcessingWake: readonly(isProcessingWake),
     audioEnergy: readonly(audioEnergy),
+    micEnergy: readonly(micEnergy),
+    availableModels: readonly(availableModels),
+    selectedModel: readonly(selectedModel),
+    selectedVoice: readonly(selectedVoice),
     startRecording,
     stopRecording,
+    selectedPersonality: readonly(selectedPersonality),
     sendPing,
     clearHistory,
+    setVoice,
+    setPersonality,
   }
 }

@@ -29,7 +29,7 @@ export async function transcribe(
   const formData = new FormData()
   const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType })
   formData.append('file', blob, filename)
-  formData.append('model', config.WHISPER_MODEL)
+  formData.append('model', 'whisper-1') // required by API but value is ignored — model set in Docker config
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)

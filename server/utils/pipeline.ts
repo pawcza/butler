@@ -154,7 +154,13 @@ type Emitter = (event: ServerEvent) => void
 async function speakAndEmit(text: string, session: SessionManager, emit: Emitter): Promise<void> {
   session.setState('SPEAKING')
   try {
-    const audioBuffer = await synthesize(text)
+    const ttsModel = session.getTtsModel()
+    const ttsVoice = session.getTtsVoice()
+    const ttsOpts: TtsOptions = {
+      ...(ttsModel !== null ? { model: ttsModel } : {}),
+      ...(ttsVoice !== null ? { voice: ttsVoice } : {}),
+    }
+    const audioBuffer = await synthesize(text, ttsOpts)
     emit({ type: 'audio', data: audioBuffer.toString('base64'), format: config.PIPER_RESPONSE_FORMAT })
   } catch (err) {
     emit({ type: 'error', message: `TTS failed: ${err instanceof Error ? err.message : err}` })
@@ -211,7 +217,7 @@ export async function processCommand(
   const lap = () => Date.now() - t0
   session.setState('THINKING')
 
-  const systemPrompt = buildSystemPrompt()
+  const systemPrompt = buildSystemPrompt(session.getPersonality())
   const history: OllamaMessage[] = session.getHistory().map((m) => ({
     role: m.role,
     content: m.content,
@@ -229,6 +235,7 @@ export async function processCommand(
 
   const MAX_TOOL_ROUNDS = 3
 
+  // Phase 1: Initial LLM call (non-streaming, with tools — reliable tool detection)
   let assistantMsg: OllamaMessage
   try {
     assistantMsg = await chatWithTools(messages, tools)
@@ -241,8 +248,11 @@ export async function processCommand(
   let resolved = resolveToolCalls(assistantMsg)
   log.info(`+${lap()}ms LLM done`)
 
+  // Phase 2: Tool execution loop
   let round = 0
   let totalToolCalls = 0
+  let streamedFinalResponse = false
+
   while (resolved.toolCalls.length > 0 && round < MAX_TOOL_ROUNDS) {
     round++
     session.setState('EXECUTING')
@@ -284,10 +294,15 @@ export async function processCommand(
     }
     log.divider()
 
+    // Follow-up: stream the interpretation (no tools — pure text)
     session.setState('THINKING')
     try {
-      assistantMsg = await chatWithTools(messages)
+      emit({ type: 'response_start' })
+      assistantMsg = await chatStream(messages, (token) => {
+        emit({ type: 'response_delta', text: token })
+      })
     } catch (err) {
+      emit({ type: 'response_end', text: '' })
       emit({ type: 'error', message: `LLM failed: ${err instanceof Error ? err.message : err}` })
       session.setState('IDLE')
       return
@@ -295,6 +310,16 @@ export async function processCommand(
 
     resolved = resolveToolCalls(assistantMsg)
     log.info(`+${lap()}ms follow-up done (round ${round})`)
+
+    if (resolved.toolCalls.length > 0) {
+      // More tool calls — signal client to discard streamed text
+      emit({ type: 'response_end', text: '' })
+    } else {
+      // Final response — close the stream
+      const text = assistantMsg.content.trim()
+      emit({ type: 'response_end', text })
+      streamedFinalResponse = true
+    }
   }
 
   if (round >= MAX_TOOL_ROUNDS && resolved.toolCalls.length > 0) {
@@ -302,6 +327,13 @@ export async function processCommand(
   }
 
   const replyText = (round > 0 ? assistantMsg.content : resolved.content).trim() || 'Done. You are welcome.'
+
+  // Phase 3: Emit streaming events for the no-tool path (text already computed)
+  if (!streamedFinalResponse) {
+    emit({ type: 'response_start' })
+    emit({ type: 'response_delta', text: replyText })
+    emit({ type: 'response_end', text: replyText })
+  }
 
   session.addMessage({ role: 'user', content: text })
   session.addMessage({ role: 'assistant', content: replyText })
