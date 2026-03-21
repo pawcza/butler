@@ -20,10 +20,10 @@ void main() {
 
     // --- Layer 1: Circular glow (covers full point sprite) ---
     // Glow fades out as particles condense into a shape to keep edges crisp
-    float glow = exp(-1.5 * radialDist * radialDist);
+    float glow = pow(max(0.0, 1.0 - radialDist), 2.5);
     float glowStrength = mix(1.8, 0.3, u_condense);
 
-    float depthFade = 1.0 / (1.0 + v_distToCenter * 0.05);
+    float depthFade = 1.0 - v_distToCenter * 0.04;
     float glowAlpha = glow * v_brightness * u_particleBrightness * depthFade * glowStrength;
     vec3 glowColor = u_color * glowAlpha;
 

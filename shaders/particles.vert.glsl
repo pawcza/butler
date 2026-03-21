@@ -66,12 +66,10 @@ void main() {
     }
 
     // --- Step 4: Add organic wobble ---
-    // Three sine waves on different axes with different frequencies
-    // so the particle traces a small Lissajous-like path.
+    // Two sine waves on XY axes with different frequencies — Lissajous path.
     float wobbleTime = u_time * 2.0 + a_phase * PI * 4.0;
     finalPosition.x += sin(wobbleTime * 1.3) * u_wobbleAmount;
     finalPosition.y += sin(wobbleTime * 1.7 + 1.0) * u_wobbleAmount;
-    finalPosition.z += sin(wobbleTime * 2.1 + 2.0) * u_wobbleAmount;
 
     // --- Step 5: Audio energy pulse ---
     // Particles push outward from center when TTS audio is playing.

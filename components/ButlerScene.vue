@@ -129,7 +129,8 @@ starGeo.setAttribute('position', new Float32BufferAttribute(starPositions, 3))
 starGeo.setAttribute('a_brightness', new Float32BufferAttribute(starBrightness, 1))
 starGeo.setAttribute('a_phase', new Float32BufferAttribute(starPhases, 1))
 
-const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+const dpr = isMobile ? Math.min(rawDpr, 1.5) : rawDpr
 const starMat = new ShaderMaterial({
   vertexShader: starsVert,
   fragmentShader: starsFrag,

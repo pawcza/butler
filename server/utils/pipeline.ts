@@ -248,6 +248,15 @@ export async function processCommand(
   let resolved = resolveToolCalls(assistantMsg)
   log.info(`+${lap()}ms LLM done`)
 
+  // Detect possible hallucination: model says it did something but never called a tool
+  if (resolved.toolCalls.length === 0 && resolved.content) {
+    const lower = resolved.content.toLowerCase()
+    const actionWords = ['turned', 'turning', 'switched', 'set ', 'setting', 'adjusted', 'activated', 'enabled', 'disabled']
+    if (actionWords.some(w => lower.includes(w))) {
+      log.warn(`⚠ possible hallucination — model claims action but no tool call: "${resolved.content.slice(0, 100)}"`)
+    }
+  }
+
   // Phase 2: Tool execution loop
   let round = 0
   let totalToolCalls = 0

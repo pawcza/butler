@@ -30,13 +30,12 @@ export async function chatWithTools(
     messages,
     stream: false,
     keep_alive: -1,
-    think: false,
     ...(tools.length > 0 ? { tools } : {}),
     options: {
-      num_ctx: 8192,
-      temperature: 0.3,
-      top_p: 0.8,
-      top_k: 20,
+      num_ctx: 32768,
+      temperature: 0.5,
+      top_p: 0.9,
+      top_k: 40,
     },
   }
 
@@ -99,13 +98,12 @@ export async function chatStream(
     messages,
     stream: true,
     keep_alive: -1,
-    think: false,
     // No tools — this is the final text-only response
     options: {
-      num_ctx: 8192,
+      num_ctx: 32768,
       temperature: 0.7,
-      top_p: 0.8,
-      top_k: 20,
+      top_p: 0.9,
+      top_k: 40,
     },
   }
 
