@@ -30,9 +30,13 @@ const props = withDefaults(defineProps<{
 })
 
 // ---------- Performance tier (one-time at init) ----------
-const isSmallScreen = typeof window !== 'undefined' && (window.innerWidth < 768 || window.innerHeight < 768)
-const PARTICLE_COUNT = isSmallScreen ? 5000 : 12000
-const STAR_COUNT = isSmallScreen ? 2000 : 4000
+const isMobile = typeof window !== 'undefined' && (
+  window.matchMedia('(pointer: coarse)').matches ||
+  window.innerWidth < 768 ||
+  window.innerHeight < 768
+)
+const PARTICLE_COUNT = isMobile ? 3000 : 12000
+const STAR_COUNT = isMobile ? 1000 : 4000
 const SHAPE_POINT_COUNT = Math.floor(PARTICLE_COUNT * 0.35)
 const GALAXY_RADIUS = 5.5
 
@@ -176,7 +180,7 @@ const particleMat = new ShaderMaterial({
     u_shapeMorph: { value: 1 },
     u_wobbleAmount: { value: ap.wobbleAmount },
     u_energy: { value: 0 },
-    u_pointSize: { value: 0.8 * dpr },
+    u_pointSize: { value: (isMobile ? 1.5 : 0.8) * dpr },
     u_color: { value: [ap.primaryR, ap.primaryG, ap.primaryB] },
     u_particleBrightness: { value: ap.particleBrightness },
   },
@@ -284,13 +288,13 @@ onBeforeRender(({ delta }) => {
   <!-- Star field (background) -->
   <TresPoints :geometry="starGeo" :material="starMat" />
 
-  <!-- Nebula fog (mid-ground, behind particles) -->
-  <TresMesh :geometry="nebulaGeo" :material="nebulaMat" :render-order="-1" />
+  <!-- Nebula fog (mid-ground, behind particles) — skip on mobile (expensive simplex noise) -->
+  <TresMesh v-if="!isMobile" :geometry="nebulaGeo" :material="nebulaMat" :render-order="-1" />
 
   <!-- Main particle system -->
   <TresPoints :geometry="particleGeo" :material="particleMat" />
 
-  <Suspense>
+  <Suspense v-if="!isMobile">
     <EffectComposerPmndrs>
       <BloomPmndrs
         :intensity="bloomIntensity"

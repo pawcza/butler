@@ -291,7 +291,6 @@ export function useVoice() {
         isPlayingAudio = false
         state.value = 'IDLE'
         startLingerTimer()
-        startGracePeriod()
       }
       source.start()
     } catch {
@@ -300,7 +299,6 @@ export function useVoice() {
       isPlayingAudio = false
       state.value = 'IDLE'
       startLingerTimer()
-      startGracePeriod()
     }
   }
 

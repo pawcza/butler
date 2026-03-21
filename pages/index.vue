@@ -19,7 +19,6 @@ const {
   isPassive,
   isProcessingWake,
   audioEnergy,
-  isInGracePeriod,
   availableModels,
   selectedModel,
   selectedVoice,
@@ -37,6 +36,23 @@ function onPersonalityChange(id: string): void {
 }
 
 const isRecording = ref(false)
+const isFullscreen = ref(false)
+
+function toggleFullscreen(): void {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {})
+    isFullscreen.value = true
+  } else {
+    document.exitFullscreen().catch(() => {})
+    isFullscreen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('fullscreenchange', () => {
+    isFullscreen.value = !!document.fullscreenElement
+  })
+})
 const transcriptEl = ref<HTMLElement | null>(null)
 
 const canInteract = computed(() => isConnected.value && state.value === 'IDLE')
@@ -53,7 +69,6 @@ const activeState = computed(() => {
   if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
   if (state.value === 'LISTENING') return 'THINKING'
   if (state.value === 'EXECUTING') return 'THINKING'
-  if (isInGracePeriod.value && state.value === 'IDLE') return 'GRACE'
   return state.value
 })
 
@@ -168,7 +183,6 @@ const stateLabel: Record<string, string> = {
   LISTENING: 'Listening\u2026',
   THINKING: 'Processing\u2026',
   SPEAKING: 'Speaking\u2026',
-  GRACE: 'Listening\u2026',
 }
 
 const stateLabelClass = computed(() => {
@@ -176,7 +190,6 @@ const stateLabelClass = computed(() => {
     case 'LISTENING': return 'text-ap-blue'
     case 'THINKING': return 'text-amber-400'
     case 'SPEAKING': return 'text-orange-400'
-    case 'GRACE': return 'text-orange-400'
     default: return 'text-ap-muted'
   }
 })
@@ -243,8 +256,17 @@ watch(activeState, async () => {
           class="w-2.5 h-2.5 rounded-full shrink-0 transition-colors duration-500"
           :class="isConnected ? 'bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.8)]' : 'bg-ap-red shadow-[0_0_10px_rgba(239,68,68,0.8)]'"
         />
+        <!-- Fullscreen toggle -->
+        <button
+          class="ml-auto pointer-events-auto text-white/50 hover:text-white transition-colors duration-200 p-2 min-h-[44px] min-w-[44px] flex items-center justify-center"
+          aria-label="Toggle fullscreen"
+          @click="toggleFullscreen"
+        >
+          <svg v-if="!isFullscreen" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+          <svg v-else xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+        </button>
         <!-- Voice selector dropdown -->
-        <div v-if="availableModels.length > 0" class="ml-auto pointer-events-auto">
+        <div v-if="availableModels.length > 0" class="pointer-events-auto">
           <VoiceSelector
             :models="availableModels"
             :selected-model="selectedModel"
