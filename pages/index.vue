@@ -17,10 +17,9 @@ const {
   clearHistory,
   passiveEnabled,
   isPassive,
-  isHearing,
   isProcessingWake,
   audioEnergy,
-  micEnergy,
+  isInGracePeriod,
   availableModels,
   selectedModel,
   selectedVoice,
@@ -46,22 +45,21 @@ const canInteract = computed(() => isConnected.value && state.value === 'IDLE')
 const MIN_HOLD_MS = 300
 let pressStartedAt = 0
 
-// Virtual display state — resolves local recording and passive listening into display states.
+// Virtual display state — resolves local recording into display states.
 // Server LISTENING = transcribing audio (processing phase) → show as THINKING.
-// Local isRecording = actively capturing mic → show as LISTENING (blue).
+// Local isRecording = actively capturing mic via button → show as LISTENING.
 const activeState = computed(() => {
   if (isProcessingWake.value) return 'THINKING'
-  if (isHearing.value && isPassive.value && state.value === 'IDLE') return 'HEARING'
   if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
-  if (isPassive.value && state.value === 'IDLE') return 'PASSIVE'
   if (state.value === 'LISTENING') return 'THINKING'
+  if (state.value === 'EXECUTING') return 'THINKING'
+  if (isInGracePeriod.value && state.value === 'IDLE') return 'GRACE'
   return state.value
 })
 
 function onPressStart(e: Event): void {
   e.preventDefault()
   if (!canInteract.value) return
-  isHearing.value = false
   pressStartedAt = Date.now()
   isRecording.value = true
   void startRecording()
@@ -167,22 +165,18 @@ function formatTime(ts: number): string {
 
 const stateLabel: Record<string, string> = {
   IDLE: 'Hold to speak',
-  PASSIVE: 'Awaiting wake word\u2026',
-  HEARING: 'Hearing\u2026',
   LISTENING: 'Listening\u2026',
   THINKING: 'Processing\u2026',
-  EXECUTING: 'Executing\u2026',
   SPEAKING: 'Speaking\u2026',
+  GRACE: 'Listening\u2026',
 }
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
-    case 'PASSIVE': return 'text-ap-orange/60'
-    case 'HEARING': return 'text-yellow-300'
     case 'LISTENING': return 'text-ap-blue'
     case 'THINKING': return 'text-amber-400'
-    case 'EXECUTING': return 'text-green-400'
-    case 'SPEAKING': return 'text-purple-400'
+    case 'SPEAKING': return 'text-orange-400'
+    case 'GRACE': return 'text-orange-400'
     default: return 'text-ap-muted'
   }
 })
@@ -236,7 +230,6 @@ watch(activeState, async () => {
     <ButlerAvatar
       :active-state="activeState"
       :audio-energy="audioEnergy"
-      :mic-energy="micEnergy"
       @press-start="onPressStart"
       @press-end="onPressEnd"
     />
@@ -283,7 +276,7 @@ watch(activeState, async () => {
         >
           {{ stateLabel[activeState] ?? activeState }}
           <span
-            v-if="activeState === 'THINKING' || activeState === 'EXECUTING'"
+            v-if="activeState === 'THINKING'"
             class="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
             :class="activeState === 'THINKING' ? 'bg-amber-400' : 'bg-green-400'"
           />
@@ -406,7 +399,7 @@ watch(activeState, async () => {
           >
             {{ stateLabel[activeState] ?? activeState }}
             <span
-              v-if="activeState === 'THINKING' || activeState === 'EXECUTING'"
+              v-if="activeState === 'THINKING'"
               class="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
               :class="activeState === 'THINKING' ? 'bg-amber-400' : 'bg-green-400'"
             />

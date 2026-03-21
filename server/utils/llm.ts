@@ -34,7 +34,7 @@ export async function chatWithTools(
     ...(tools.length > 0 ? { tools } : {}),
     options: {
       num_ctx: 8192,
-      temperature: 0.7,
+      temperature: 0.3,
       top_p: 0.8,
       top_k: 20,
     },

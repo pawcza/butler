@@ -4,10 +4,8 @@ import { loadGsap, getGsap } from '~/utils/gsap'
 const props = withDefaults(defineProps<{
   activeState: string
   audioEnergy?: number
-  micEnergy?: number
 }>(), {
   audioEnergy: 0,
-  micEnergy: 0,
 })
 
 const emit = defineEmits<{
@@ -18,12 +16,10 @@ const emit = defineEmits<{
 // ---------- Custom cursor ----------
 const STATE_COLORS: Record<string, string> = {
   IDLE: '#737373',
-  PASSIVE: '#ff6600',
-  HEARING: '#ffda80',
   LISTENING: '#33aaff',
   THINKING: '#ffcc40',
-  EXECUTING: '#33dd4d',
-  SPEAKING: '#a633ff',
+  SPEAKING: '#ff6600',
+  GRACE: '#ff6600',
 }
 
 const cursorEl = ref<HTMLElement | null>(null)
@@ -94,7 +90,7 @@ function onPointerUp() {
       window-size
       :power-preference="'high-performance'"
     >
-      <ButlerScene :active-state="props.activeState" :audio-energy="props.audioEnergy" :mic-energy="props.micEnergy" />
+      <ButlerScene :active-state="props.activeState" :audio-energy="props.audioEnergy" />
     </TresCanvas>
 
     <!-- Custom cursor ring — hidden on touch devices, positioned by GSAP quickTo -->

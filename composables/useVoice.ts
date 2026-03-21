@@ -51,7 +51,8 @@ function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let vad: any = null
 let vadStarting = false
-let vadPhase: 'passive' | 'active' = 'passive'
+let vadPhase: 'passive' | 'active' | 'grace' = 'passive'
+let graceTimer: ReturnType<typeof setTimeout> | null = null
 let wakeCheckInFlight = false
 let minWindowElapsed = false
 let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
@@ -71,56 +72,6 @@ let userBubbleTimer: ReturnType<typeof setTimeout> | null = null
 const audioEnergy = ref(0)
 let analyserRafId = 0
 
-// Module-level mic energy — real-time input level during HEARING/LISTENING
-const micEnergy = ref(0)
-let micAnalyserCtx: AudioContext | null = null
-let micAnalyserNode: AnalyserNode | null = null
-let micSourceNode: MediaStreamAudioSourceNode | null = null
-let micRafId = 0
-
-function startMicEnergyLoop(): void {
-  if (!micAnalyserNode) return
-  const dataArray = new Uint8Array(micAnalyserNode.frequencyBinCount)
-  function updateMicEnergy(): void {
-    if (!micAnalyserNode) return
-    micAnalyserNode.getByteFrequencyData(dataArray)
-    let sum = 0
-    for (let i = 0; i < dataArray.length; i++) {
-      const v = dataArray[i] ?? 0
-      sum += v * v
-    }
-    micEnergy.value = Math.sqrt(sum / dataArray.length) / 128
-    micRafId = requestAnimationFrame(updateMicEnergy)
-  }
-  updateMicEnergy()
-}
-
-function stopMicEnergy(): void {
-  if (micRafId) {
-    cancelAnimationFrame(micRafId)
-    micRafId = 0
-  }
-  micEnergy.value = 0
-  if (micSourceNode) {
-    micSourceNode.disconnect()
-    micSourceNode = null
-  }
-  if (micAnalyserNode) {
-    micAnalyserNode.disconnect()
-    micAnalyserNode = null
-  }
-}
-
-function connectMicAnalyser(stream: MediaStream): void {
-  if (!micAnalyserCtx) micAnalyserCtx = new AudioContext()
-  stopMicEnergy()
-  micAnalyserNode = micAnalyserCtx.createAnalyser()
-  micAnalyserNode.fftSize = 256
-  micSourceNode = micAnalyserCtx.createMediaStreamSource(stream)
-  micSourceNode.connect(micAnalyserNode)
-  // Do NOT connect analyser to destination — we don't want to hear the mic
-  startMicEnergyLoop()
-}
 
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
@@ -140,15 +91,21 @@ export function useVoice() {
   // Passive listening
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
-  const isHearing = ref(false)
+
+  // Grace period — conversational follow-up window after assistant speaks
+  const isInGracePeriod = ref(false)
 
   // True between wake word detection and first server state event — masks STT latency
   const isProcessingWake = ref(false)
 
   // TTS voice selection
   const availableModels = ref<TtsModelInfo[]>([])
-  const selectedModel = ref('')
-  const selectedVoice = ref('')
+  const selectedModel = ref(
+    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-tts-model')) || '',
+  )
+  const selectedVoice = ref(
+    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-tts-voice')) || '',
+  )
 
   // Personality selection
   const selectedPersonality = ref<Personality>(
@@ -161,6 +118,37 @@ export function useVoice() {
       lingerTimer = null
       bubbleVisible.value = false
     }, 3000)
+  }
+
+  function startGracePeriod(): void {
+    if (!vad || !isPassive.value) return
+    cancelGracePeriod()
+    vadPhase = 'grace'
+    isInGracePeriod.value = true
+    graceTimer = setTimeout(() => {
+      graceTimer = null
+      vadPhase = 'passive'
+      isInGracePeriod.value = false
+    }, 10_000)
+  }
+
+  function cancelGracePeriod(): void {
+    if (graceTimer !== null) {
+      clearTimeout(graceTimer)
+      graceTimer = null
+    }
+    if (vadPhase === 'grace') vadPhase = 'passive'
+    isInGracePeriod.value = false
+  }
+
+  // ── Preference re-sync ──────────────────────────────────────────────────────
+
+  function resyncPreferences(): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    if (selectedModel.value && selectedVoice.value) {
+      ws.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
+    }
+    ws.send(JSON.stringify({ type: 'set_personality', personality: selectedPersonality.value }))
   }
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -177,12 +165,7 @@ export function useVoice() {
 
     ws.onopen = () => {
       isConnected.value = true
-      // Re-send stored voice preference on (re)connect
-      if (selectedModel.value && selectedVoice.value) {
-        ws?.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
-      }
-      // Re-send stored personality on (re)connect
-      ws?.send(JSON.stringify({ type: 'set_personality', personality: selectedPersonality.value }))
+      resyncPreferences()
     }
     ws.onclose = () => { isConnected.value = false }
     ws.onerror = () => { error.value = 'WebSocket connection failed' }
@@ -308,6 +291,7 @@ export function useVoice() {
         isPlayingAudio = false
         state.value = 'IDLE'
         startLingerTimer()
+        startGracePeriod()
       }
       source.start()
     } catch {
@@ -316,6 +300,7 @@ export function useVoice() {
       isPlayingAudio = false
       state.value = 'IDLE'
       startLingerTimer()
+      startGracePeriod()
     }
   }
 
@@ -330,6 +315,7 @@ export function useVoice() {
 
   async function startRecording(silent = false): Promise<void> {
     if (mediaRecorder?.state === 'recording') return
+    cancelGracePeriod()
     if (!silent) {
       playAckSound()
       if (vad) vad.pause()
@@ -346,7 +332,6 @@ export function useVoice() {
       mediaRecorder = new MediaRecorder(stream)
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
       mediaRecorder.start()
-      connectMicAnalyser(stream)
     } catch (err) {
       error.value = `Microphone access denied: ${err instanceof Error ? err.message : err}`
       setTimeout(() => { error.value = null }, 5000)
@@ -355,7 +340,6 @@ export function useVoice() {
 
   function stopRecording(discard = false): void {
     recordingGen++ // invalidate any in-flight startRecording
-    stopMicEnergy()
     if (!mediaRecorder || mediaRecorder.state === 'inactive') return
     if (discard) {
       mediaRecorder.onstop = null
@@ -381,19 +365,19 @@ export function useVoice() {
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
     console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight, '| state:', state.value)
     if (vadPhase === 'passive') {
-      if (wakeCheckInFlight || state.value !== 'IDLE') {
-        isHearing.value = false
-        stopMicEnergy()
-        return
-      }
+      if (wakeCheckInFlight || state.value !== 'IDLE') return
       wakeCheckInFlight = true
       try {
         await checkWakeWord(audio)
       } finally {
         wakeCheckInFlight = false
-        isHearing.value = false
-        stopMicEnergy()
       }
+    } else if (vadPhase === 'grace') {
+      // Grace period follow-up — send audio directly, skip wake word
+      cancelGracePeriod()
+      const wav = float32ToWav(audio)
+      ws?.send(wav)
+      isProcessingWake.value = true
     } else if (vadPhase === 'active' && minWindowElapsed) {
       triggerActiveStop()
     }
@@ -488,12 +472,10 @@ export function useVoice() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
         onSpeechStart: () => {
-          if (vadPhase === 'passive' && state.value === 'IDLE') {
-            isHearing.value = true
-            // Tap into the VAD's mic stream for real-time energy visualization
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const vadStream = (vad as any)?._stream as MediaStream | undefined
-            if (vadStream) connectMicAnalyser(vadStream)
+          // Reset grace timer — user is speaking, give them a fresh 10s after they finish
+          if (vadPhase === 'grace' && graceTimer !== null) {
+            clearTimeout(graceTimer)
+            graceTimer = null
           }
         },
         onSpeechEnd: (audio: Float32Array) => {
@@ -514,7 +496,6 @@ export function useVoice() {
 
   function stopPassiveListening(): void {
     if (!vad) return
-    stopMicEnergy()
     vad.pause()
     vad.destroy()
     vad = null
@@ -560,6 +541,10 @@ export function useVoice() {
         selectedModel.value = data.defaults.model
         selectedVoice.value = data.defaults.voice
       }
+
+      // Re-send preferences now that voice refs are populated — covers the
+      // race where ws.onopen fired before this fetch resolved.
+      resyncPreferences()
     } catch {
       // Non-critical — voice selector just stays empty
     }
@@ -604,15 +589,14 @@ export function useVoice() {
     bubbleUserText: readonly(bubbleUserText),
     passiveEnabled,
     isPassive,
-    isHearing,
     isProcessingWake: readonly(isProcessingWake),
     audioEnergy: readonly(audioEnergy),
-    micEnergy: readonly(micEnergy),
     availableModels: readonly(availableModels),
     selectedModel: readonly(selectedModel),
     selectedVoice: readonly(selectedVoice),
     startRecording,
     stopRecording,
+    isInGracePeriod: readonly(isInGracePeriod),
     selectedPersonality: readonly(selectedPersonality),
     sendPing,
     clearHistory,

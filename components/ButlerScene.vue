@@ -1,161 +1,186 @@
 <script setup lang="ts">
 import {
-  SphereGeometry,
-  TorusGeometry,
-  BoxGeometry,
+  BufferAttribute,
   BufferGeometry,
   Float32BufferAttribute,
-  MeshStandardMaterial,
-  PointsMaterial,
-  Color,
+  ShaderMaterial,
+  PlaneGeometry,
   AdditiveBlending,
   Vector3,
-  type Mesh,
+  Vector2,
   type Points,
-  type PointLight,
   type PerspectiveCamera,
 } from 'three'
-import { BloomPmndrs, EffectComposerPmndrs } from '@tresjs/post-processing'
+import { BloomPmndrs, ChromaticAberrationPmndrs, EffectComposerPmndrs } from '@tresjs/post-processing'
+import { generateShapePositions, type ShapeName } from '~/utils/shapes'
 
+import particlesVert from '~/shaders/particles.vert.glsl?raw'
+import particlesFrag from '~/shaders/particles.frag.glsl?raw'
+import starsVert from '~/shaders/stars.vert.glsl?raw'
+import starsFrag from '~/shaders/stars.frag.glsl?raw'
+import nebulaVert from '~/shaders/nebula.vert.glsl?raw'
+import nebulaFrag from '~/shaders/nebula.frag.glsl?raw'
+
+// ---------- Props ----------
 const props = withDefaults(defineProps<{
   activeState: string
   audioEnergy?: number
-  micEnergy?: number
 }>(), {
   audioEnergy: 0,
-  micEnergy: 0,
 })
 
+// ---------- Performance tier (one-time at init) ----------
+const isSmallScreen = typeof window !== 'undefined' && (window.innerWidth < 768 || window.innerHeight < 768)
+const PARTICLE_COUNT = isSmallScreen ? 5000 : 12000
+const STAR_COUNT = isSmallScreen ? 2000 : 4000
+const SHAPE_POINT_COUNT = Math.floor(PARTICLE_COUNT * 0.35)
+const GALAXY_RADIUS = 5.5
+
+// ---------- Avatar state composable ----------
 const activeStateRef = toRef(props, 'activeState')
 const { current: ap, update: updateAp } = useAvatarState(activeStateRef)
 
-// ---------- Geometries (created once) ----------
-const coreGeo = new SphereGeometry(0.6, 64, 64)
-
-// Precompute diamond (octahedron) target positions from sphere vertices.
-// For each vertex direction, project onto octahedron surface: r / (|nx|+|ny|+|nz|)
-// Then stretch Y for a tall diamond look.
-const spherePositions = new Float32Array(coreGeo.attributes['position']!.array as Float32Array)
-const diamondPositions = new Float32Array(spherePositions.length)
-for (let i = 0; i < spherePositions.length; i += 3) {
-  const x = spherePositions[i]!
-  const y = spherePositions[i + 1]!
-  const z = spherePositions[i + 2]!
-  const len = Math.sqrt(x * x + y * y + z * z)
-  if (len < 0.001) {
-    diamondPositions[i] = x
-    diamondPositions[i + 1] = y
-    diamondPositions[i + 2] = z
-    continue
-  }
-  const nx = x / len
-  const ny = y / len
-  const nz = z / len
-  const octR = 0.6 / (Math.abs(nx) + Math.abs(ny) + Math.abs(nz))
-  diamondPositions[i] = nx * octR * 0.75
-  diamondPositions[i + 1] = ny * octR * 1.35   // taller — diamond shape
-  diamondPositions[i + 2] = nz * octR * 0.75
-}
-// Precompute hexagonal prism target positions from sphere vertices.
-// Project XZ onto a regular hexagon cross-section, flatten Y for a chunky prism.
-const hexPositions = new Float32Array(spherePositions.length)
-const HEX_SIDES = 6
-for (let i = 0; i < spherePositions.length; i += 3) {
-  const x = spherePositions[i]!
-  const y = spherePositions[i + 1]!
-  const z = spherePositions[i + 2]!
-  const len = Math.sqrt(x * x + y * y + z * z)
-  if (len < 0.001) {
-    hexPositions[i] = x
-    hexPositions[i + 1] = y
-    hexPositions[i + 2] = z
-    continue
-  }
-  // Hex cross-section: distance from center to edge of regular hexagon
-  const angle = Math.atan2(z, x)
-  const sectorAngle = (Math.PI * 2) / HEX_SIDES
-  const sectorPhase = ((angle % sectorAngle) + sectorAngle) % sectorAngle - sectorAngle / 2
-  const hexScale = Math.cos(sectorAngle / 2) / Math.cos(sectorPhase)
-  const rXZ = Math.sqrt(x * x + z * z)
-  const rTarget = rXZ > 0.001 ? Math.min(rXZ, 0.6 * hexScale) : 0
-  const nx = rXZ > 0.001 ? x / rXZ : 0
-  const nz = rXZ > 0.001 ? z / rXZ : 0
-  hexPositions[i] = nx * rTarget
-  hexPositions[i + 1] = y * 0.85   // slightly squashed vertically
-  hexPositions[i + 2] = nz * rTarget
-}
-
-let lastMorph = -1  // track to avoid unnecessary vertex updates
-let lastShape = -1
-
-// 4 ring segments at varied radii, tube thickness, and arc lengths
-const RING_COUNT = 4
-const ringGeos = [
-  new TorusGeometry(1.8, 0.035, 16, 64, Math.PI * 1.2),
-  new TorusGeometry(1.4, 0.03, 16, 48, Math.PI * 0.9),
-  new TorusGeometry(1.1, 0.025, 16, 40, Math.PI * 0.7),
-  new TorusGeometry(1.6, 0.028, 16, 56, Math.PI * 1.0),
-]
-
-// Each ring: [tiltX, tiltY, direction, speed multiplier, startZ]
-const ringConfigs: [number, number, number, number, number][] = [
-  [0.4, 0.0, 1, 1.0, 1.2],
-  [-0.6, 0.3, -1, 0.8, 3.8],
-  [0.25, -0.2, 1, 1.2, 5.5],
-  [1.2, 0.5, -1, 0.7, 0.7],
-]
-
-const panelGeo = new BoxGeometry(0.7, 1.0, 0.02)
-
-const PARTICLE_COUNT = 80
-const particleGeo = new BufferGeometry()
-const positions = new Float32Array(PARTICLE_COUNT * 3)
+// ---------- Home positions (mild center bias for shape density) ----------
+// sqrt(random) gives density ∝ r — more particles near center so shapes
+// look solid even at partial condense, while still reaching screen edges.
+const homePositions = new Float32Array(PARTICLE_COUNT * 3)
 for (let i = 0; i < PARTICLE_COUNT; i++) {
   const theta = Math.random() * Math.PI * 2
   const phi = Math.acos(2 * Math.random() - 1)
-  const r = 2.2 + Math.random() * 0.6
-  positions[i * 3] = r * Math.sin(phi) * Math.cos(theta)
-  positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
-  positions[i * 3 + 2] = r * Math.cos(phi)
+  const r = Math.sqrt(Math.random()) * GALAXY_RADIUS
+  homePositions[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+  homePositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
+  homePositions[i * 3 + 2] = r * Math.cos(phi)
 }
-particleGeo.setAttribute('position', new Float32BufferAttribute(positions, 3))
 
-// ---------- Materials ----------
-// Core — same style as rings: emissive glow with subtle sheen
-const coreMat = new MeshStandardMaterial({
-  color: 0x737373,
-  emissive: 0x737373,
-  emissiveIntensity: 0.45,
-  roughness: 0.45,
-  metalness: 0.3,
+// ---------- Assignment: closest particles to center form shapes ----------
+// Sort all particles by distance to origin. The closest SHAPE_POINT_COUNT
+// become shape particles — they get pulled in from wherever they are.
+const phases = new Float32Array(PARTICLE_COUNT)
+for (let i = 0; i < PARTICLE_COUNT; i++) phases[i] = Math.random()
+
+const sortedByDist = Array.from({ length: PARTICLE_COUNT }, (_, i) => i)
+  .sort((a, b) => {
+    const ax = homePositions[a * 3]!, ay = homePositions[a * 3 + 1]!, az = homePositions[a * 3 + 2]!
+    const bx = homePositions[b * 3]!, by = homePositions[b * 3 + 1]!, bz = homePositions[b * 3 + 2]!
+    return (ax * ax + ay * ay + az * az) - (bx * bx + by * by + bz * bz)
+  })
+
+const assigned = new Float32Array(PARTICLE_COUNT)
+// particleToSlot[i] = which shape slot particle i maps to (-1 = floater)
+const particleToSlot = new Int32Array(PARTICLE_COUNT).fill(-1)
+for (let rank = 0; rank < SHAPE_POINT_COUNT; rank++) {
+  const idx = sortedByDist[rank]!
+  assigned[idx] = 1.0
+  particleToSlot[idx] = rank
+}
+
+// ---------- Pre-generate all 7 shapes ----------
+const shapePositions: Record<ShapeName, Float32Array> = {
+  triangle: generateShapePositions('triangle', SHAPE_POINT_COUNT),
+  cube: generateShapePositions('cube', SHAPE_POINT_COUNT),
+  ring: generateShapePositions('ring', SHAPE_POINT_COUNT),
+  infinity: generateShapePositions('infinity', SHAPE_POINT_COUNT),
+  pi: generateShapePositions('pi', SHAPE_POINT_COUNT),
+  alpha: generateShapePositions('alpha', SHAPE_POINT_COUNT),
+  omega: generateShapePositions('omega', SHAPE_POINT_COUNT),
+}
+
+// ---------- Shape buffers (from/to for morphing) ----------
+// Each particle's shape target is determined by particleToSlot mapping.
+// Floaters (slot = -1) get 0,0,0 — doesn't matter, shader ignores them.
+const fromArray = new Float32Array(PARTICLE_COUNT * 3)
+const toArray = new Float32Array(PARTICLE_COUNT * 3)
+const defaultShape = shapePositions.ring
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  const slot = particleToSlot[i]!
+  if (slot >= 0) {
+    fromArray[i * 3] = defaultShape[slot * 3] ?? 0
+    fromArray[i * 3 + 1] = defaultShape[slot * 3 + 1] ?? 0
+    fromArray[i * 3 + 2] = defaultShape[slot * 3 + 2] ?? 0
+    toArray[i * 3] = defaultShape[slot * 3] ?? 0
+    toArray[i * 3 + 1] = defaultShape[slot * 3 + 1] ?? 0
+    toArray[i * 3 + 2] = defaultShape[slot * 3 + 2] ?? 0
+  }
+}
+
+// ---------- Star field geometry + material ----------
+const starGeo = new BufferGeometry()
+const starPositions = new Float32Array(STAR_COUNT * 3)
+const starBrightness = new Float32Array(STAR_COUNT)
+const starPhases = new Float32Array(STAR_COUNT)
+const STAR_RADIUS = 50
+const BRIGHT_STAR_COUNT = 50
+
+for (let i = 0; i < STAR_COUNT; i++) {
+  const theta = Math.random() * Math.PI * 2
+  const phi = Math.acos(2 * Math.random() - 1)
+  starPositions[i * 3] = STAR_RADIUS * Math.sin(phi) * Math.cos(theta)
+  starPositions[i * 3 + 1] = STAR_RADIUS * Math.sin(phi) * Math.sin(theta)
+  starPositions[i * 3 + 2] = STAR_RADIUS * Math.cos(phi)
+  starBrightness[i] = i < BRIGHT_STAR_COUNT ? 0.8 + Math.random() * 0.2 : 0.05 + Math.random() * 0.25
+  starPhases[i] = Math.random()
+}
+starGeo.setAttribute('position', new Float32BufferAttribute(starPositions, 3))
+starGeo.setAttribute('a_brightness', new Float32BufferAttribute(starBrightness, 1))
+starGeo.setAttribute('a_phase', new Float32BufferAttribute(starPhases, 1))
+
+const dpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
+const starMat = new ShaderMaterial({
+  vertexShader: starsVert,
+  fragmentShader: starsFrag,
+  uniforms: {
+    u_time: { value: 0 },
+    u_pointSize: { value: 1.5 * dpr },
+  },
+  transparent: true,
+  depthWrite: false,
 })
 
-// Rings — subtle sheen, not chrome
-const ringMats = Array.from({ length: RING_COUNT }, () =>
-  new MeshStandardMaterial({
-    color: 0x737373,
-    emissive: 0x737373,
-    emissiveIntensity: 0.45,
-    roughness: 0.45,
-    metalness: 0.3,
-  }),
-)
-
-const panelMat = new MeshStandardMaterial({
-  color: 0x737373,
-  emissive: 0x737373,
-  emissiveIntensity: 0.3,
-  roughness: 0.3,
-  metalness: 0.5,
+// ---------- Nebula quad geometry + material ----------
+const nebulaGeo = new PlaneGeometry(2, 2)
+const nebulaMat = new ShaderMaterial({
+  vertexShader: nebulaVert,
+  fragmentShader: nebulaFrag,
+  uniforms: {
+    u_time: { value: 0 },
+    u_color: { value: [ap.primaryR, ap.primaryG, ap.primaryB] },
+    u_intensity: { value: 0.08 },
+  },
   transparent: true,
-  opacity: 0.35,
+  depthTest: false,
+  depthWrite: false,
 })
 
-const particleMat = new PointsMaterial({
-  color: 0x737373,
-  size: 0.04,
+// ---------- Main particle geometry + material ----------
+const particleGeo = new BufferGeometry()
+particleGeo.setAttribute('position', new Float32BufferAttribute(new Float32Array(PARTICLE_COUNT * 3), 3))
+particleGeo.setAttribute('a_homePosition', new Float32BufferAttribute(homePositions, 3))
+
+// Must use BufferAttribute (not Float32BufferAttribute) to keep the same
+// array reference. Float32BufferAttribute copies the data, so render-loop
+// writes to fromArray/toArray would never reach the GPU.
+const fromAttr = new BufferAttribute(fromArray, 3)
+const toAttr = new BufferAttribute(toArray, 3)
+particleGeo.setAttribute('a_shapePositionFrom', fromAttr)
+particleGeo.setAttribute('a_shapePositionTo', toAttr)
+particleGeo.setAttribute('a_phase', new Float32BufferAttribute(phases, 1))
+particleGeo.setAttribute('a_assignedToShape', new Float32BufferAttribute(assigned, 1))
+
+const particleMat = new ShaderMaterial({
+  vertexShader: particlesVert,
+  fragmentShader: particlesFrag,
+  uniforms: {
+    u_time: { value: 0 },
+    u_condense: { value: 0 },
+    u_shapeMorph: { value: 1 },
+    u_wobbleAmount: { value: ap.wobbleAmount },
+    u_energy: { value: 0 },
+    u_pointSize: { value: 0.8 * dpr },
+    u_color: { value: [ap.primaryR, ap.primaryG, ap.primaryB] },
+    u_particleBrightness: { value: ap.particleBrightness },
+  },
   transparent: true,
-  opacity: 0.15,
   blending: AdditiveBlending,
   depthWrite: false,
 })
@@ -163,64 +188,76 @@ const particleMat = new PointsMaterial({
 // ---------- Camera orbit ----------
 const cameraRef = shallowRef<PerspectiveCamera | null>(null)
 const ORBIT_RADIUS = 6
-const ORBIT_ELEVATION = -0.45   // slight low angle (negative = below center)
+const ORBIT_ELEVATION = 0
 const ORBIT_SPEED_MAP: Record<string, number> = {
-  IDLE: 0.06,
-  PASSIVE: 0.06,
-  HEARING: 0.08,
-  LISTENING: 0.10,
-  THINKING: 0.15,
-  EXECUTING: 0.18,
-  SPEAKING: 0.10,
+  IDLE: 0.03,
+  LISTENING: 0.04,
+  THINKING: 0.05,
+  SPEAKING: 0.04,
+  GRACE: 0.03,
 }
 let orbitAngle = 0
-let orbitSpeed = 0.06
-const lookTarget = new Vector3(0, 0.3, 0)
+let orbitSpeed = 0.005
+const lookTarget = new Vector3(0, 0, 0)
 
-// ---------- Mesh refs ----------
-const coreRef = shallowRef<Mesh | null>(null)
-const ringRefs = Array.from({ length: RING_COUNT }, () => shallowRef<Mesh | null>(null))
-const panelRef = shallowRef<Mesh | null>(null)
-const particlesRef = shallowRef<Points | null>(null)
-
-// Colored light refs — these paint the chrome core
-const colorLight0Ref = shallowRef<PointLight | null>(null)
-const colorLight1Ref = shallowRef<PointLight | null>(null)
-const colorLight2Ref = shallowRef<PointLight | null>(null)
-
-// Reusable Color instance (no per-frame alloc)
-const tmpColor = new Color()
+// ---------- Render loop ----------
 let elapsed = 0
-let ringsSeeded = false
 let smoothedEnergy = 0
-let smoothedMicEnergy = 0
-
 const bloomIntensity = ref(ap.bloomIntensity)
+const chromaticOffset = ref(new Vector2(0, 0))
+const hazeIntensity = ref(0)
+const hazeTime = ref(0)
 
 const { onBeforeRender } = useLoop()
 
 onBeforeRender(({ delta }) => {
   const dt = Math.min(delta, 0.1)
-  updateAp(dt)
+  const { shapeChanged } = updateAp(dt)
+  elapsed += dt
 
-  // Smooth audio energy to avoid jarring jumps
-  const energyTarget = props.audioEnergy
-  smoothedEnergy += (energyTarget - smoothedEnergy) * (1 - Math.exp(-12 * dt))
-  const ae = smoothedEnergy
+  // Smooth audio energy — TTS playback drives outward pulse
+  smoothedEnergy += (props.audioEnergy - smoothedEnergy) * (1 - Math.exp(-12 * dt))
 
-  // Smooth mic energy for HEARING/LISTENING states
-  const micTarget = props.micEnergy
-  smoothedMicEnergy += (micTarget - smoothedMicEnergy) * (1 - Math.exp(-12 * dt))
-  const me = smoothedMicEnergy
+  // --- Shape buffer swap ---
+  if (shapeChanged) {
+    fromArray.set(toArray)
+    const newPositions = shapePositions[shapeChanged]
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const slot = particleToSlot[i]!
+      if (slot >= 0) {
+        toArray[i * 3] = newPositions[slot * 3] ?? 0
+        toArray[i * 3 + 1] = newPositions[slot * 3 + 1] ?? 0
+        toArray[i * 3 + 2] = newPositions[slot * 3 + 2] ?? 0
+      }
+    }
+    fromAttr.needsUpdate = true
+    toAttr.needsUpdate = true
+  }
 
-  const isHearing = props.activeState === 'HEARING'
-  const isListening = props.activeState === 'LISTENING'
+  // --- Update particle uniforms ---
+  const pu = particleMat.uniforms
+  pu['u_time']!.value = elapsed
+  pu['u_condense']!.value = ap.condense
+  pu['u_shapeMorph']!.value = ap.shapeMorph
+  pu['u_wobbleAmount']!.value = ap.wobbleAmount
+  pu['u_energy']!.value = smoothedEnergy
+  pu['u_color']!.value = [ap.primaryR, ap.primaryG, ap.primaryB]
+  pu['u_particleBrightness']!.value = ap.particleBrightness
 
-  // Orbit camera — speed adapts to active state
+  // --- Update star uniforms ---
+  starMat.uniforms['u_time']!.value = elapsed
+
+  // --- Update nebula uniforms ---
+  const nu = nebulaMat.uniforms
+  nu['u_time']!.value = elapsed
+  nu['u_color']!.value = [ap.primaryR, ap.primaryG, ap.primaryB]
+  nu['u_intensity']!.value = 0.02 + ap.condense * 0.02 + smoothedEnergy * 0.01
+
+  // --- Camera orbit ---
   const cam = cameraRef.value
   if (cam) {
-    const targetOrbitSpeed = ORBIT_SPEED_MAP[props.activeState] ?? 0.06
-    orbitSpeed += (targetOrbitSpeed - orbitSpeed) * (1 - Math.exp(-4 * dt))
+    const targetSpeed = ORBIT_SPEED_MAP[props.activeState] ?? 0.06
+    orbitSpeed += (targetSpeed - orbitSpeed) * (1 - Math.exp(-4 * dt))
     orbitAngle += orbitSpeed * dt
     cam.position.x = Math.sin(orbitAngle) * ORBIT_RADIUS
     cam.position.z = Math.cos(orbitAngle) * ORBIT_RADIUS
@@ -228,196 +265,47 @@ onBeforeRender(({ delta }) => {
     cam.lookAt(lookTarget)
   }
 
-  tmpColor.setRGB(ap.primaryR, ap.primaryG, ap.primaryB)
-
-  elapsed += dt
-
-  // Core — color + audio/mic energy boost
-  coreMat.emissive.copy(tmpColor)
-  coreMat.color.copy(tmpColor)
-  const micIntensityBoost = isHearing ? me * 0.15 : isListening ? me * 0.3 : 0
-  coreMat.emissiveIntensity = ap.coreIntensity + ae * 0.5 + micIntensityBoost
-
-  // Core — spin, scale, distortion
-  const core = coreRef.value
-  if (core) {
-    // Spin — fast rotation on multiple axes
-    core.rotation.y += ap.coreSpin * dt
-    core.rotation.x += ap.coreSpin * dt * 0.7
-
-    const isSpeaking = props.activeState === 'SPEAKING'
-
-    // Extra speech-driven spin during SPEAKING
-    if (isSpeaking) {
-      core.rotation.y += ae * 2.0 * dt
-    }
-
-    // Gentle attentive spin during LISTENING — the avatar is paying attention
-    if (isListening) {
-      core.rotation.y += me * 0.8 * dt
-    }
-
-    // Distort — non-uniform scale wobble (3 out-of-phase sine waves)
-    const d = ap.coreDistort
-    const micScaleBoost = isHearing ? me * 0.05 : isListening ? me * 0.10 : 0
-    const s = ap.coreScale + ae * 0.15 + micScaleBoost
-    if (d > 0.01) {
-      const t = elapsed * 8
-      const sx = s + Math.sin(t * 2.3) * d
-      const sy = s + Math.sin(t * 3.1 + 1.0) * d
-      const sz = s + Math.sin(t * 1.7 + 2.0) * d
-      if (isSpeaking) {
-        // Stretch Y with audio energy for a "speaking" mouth effect
-        core.scale.set(sx, sy + ae * 0.3, sz)
-      } else if (isListening) {
-        // Subtle Y-pulse during LISTENING — "breathing" in the user's voice
-        core.scale.set(sx, sy + me * 0.12, sz)
-      } else {
-        core.scale.set(sx, sy, sz)
-      }
-    } else {
-      // Smooth back to uniform scale
-      core.scale.x += (s - core.scale.x) * 0.1
-      core.scale.y += (s - core.scale.y) * 0.1
-      core.scale.z += (s - core.scale.z) * 0.1
-    }
-
-    // Morph sphere → diamond or hexagon based on coreMorph and coreShape
-    const m = ap.coreMorph
-    const sh = ap.coreShape
-    if (Math.abs(m - lastMorph) > 0.001 || Math.abs(sh - lastShape) > 0.001) {
-      lastMorph = m
-      lastShape = sh
-      const pos = coreGeo.attributes['position']!.array as Float32Array
-      for (let i = 0; i < pos.length; i++) {
-        // Blend between diamond and hex targets based on coreShape
-        const target = diamondPositions[i]! + (hexPositions[i]! - diamondPositions[i]!) * sh
-        pos[i] = spherePositions[i]! + (target - spherePositions[i]!) * m
-      }
-      coreGeo.attributes['position']!.needsUpdate = true
-      coreGeo.computeVertexNormals()
-    }
-  }
-
-  // Colored lights
-  const intensity = ap.coreIntensity * 3
-  const cl0 = colorLight0Ref.value
-  if (cl0) { cl0.color.copy(tmpColor); cl0.intensity = intensity }
-  const cl1 = colorLight1Ref.value
-  if (cl1) { cl1.color.copy(tmpColor); cl1.intensity = intensity * 0.8 }
-  const cl2 = colorLight2Ref.value
-  if (cl2) { cl2.color.copy(tmpColor); cl2.intensity = intensity * 0.6 }
-
-  // Rings — seed starting rotations once
-  if (!ringsSeeded && ringRefs[0]?.value) {
-    ringsSeeded = true
-    for (let i = 0; i < RING_COUNT; i++) {
-      const r = ringRefs[i]?.value
-      const c = ringConfigs[i]
-      if (r && c) r.rotation.z = c[4]
-    }
-  }
-
-  // Rings — boost speed with audio/mic energy
-  const micRingBoost = isHearing ? me * 0.15 : isListening ? me * 0.3 : 0
-  const ringSpeedMul = props.activeState === 'SPEAKING' ? 1 + ae * 0.5 : 1 + micRingBoost
-  for (let i = 0; i < RING_COUNT; i++) {
-    const ring = ringRefs[i]?.value
-    if (!ring) continue
-    const cfg = ringConfigs[i]
-    if (!cfg) continue
-    ring.rotation.z += ap.ringSpeed * dt * cfg[2] * cfg[3] * ringSpeedMul
-    ring.rotation.x = cfg[0]
-    ring.rotation.y = cfg[1]
-    const mat = ringMats[i]
-    if (!mat) continue
-    mat.emissive.copy(tmpColor)
-    mat.color.copy(tmpColor)
-    mat.emissiveIntensity = ap.coreIntensity * 0.5
-  }
-
-  // Panel
-  const panel = panelRef.value
-  if (panel) {
-    if (ap.panelFlipping > 0.5) {
-      panel.rotation.y += dt * 1.5
-    } else {
-      panel.rotation.y *= 0.95
-    }
-    panelMat.emissive.copy(tmpColor)
-    panelMat.color.copy(tmpColor)
-    panelMat.emissiveIntensity = ap.coreIntensity * 0.3
-    panelMat.opacity = 0.15 + ap.panelFlipping * 0.25
-  }
-
-  // Particles — modulated by audio energy (SPEAKING) and mic energy (HEARING/LISTENING)
-  const micParticleBoost = isHearing ? me * 0.1 : isListening ? me * 0.2 : 0
-  const pts = particlesRef.value
-  if (pts) {
-    pts.rotation.y += ap.particleSpeed * dt * 0.5
-    pts.rotation.x += ap.particleSpeed * dt * 0.2
-    particleMat.color.copy(tmpColor)
-    particleMat.opacity = ap.particleOpacity + ae * 0.3 + micParticleBoost
-  }
-
-  // Bloom — modulated by audio energy (SPEAKING) and mic energy (HEARING/LISTENING)
-  const micBloomBoost = isHearing ? me * 0.12 : isListening ? me * 0.2 : 0
-  bloomIntensity.value = ap.bloomIntensity + ae * 0.3 + micBloomBoost
+  // --- Post-processing ---
+  bloomIntensity.value = ap.bloomIntensity + smoothedEnergy * 0.1
+  const ca = ap.chromaticIntensity + smoothedEnergy * 0.005
+  chromaticOffset.value.set(
+    Math.cos(elapsed) * ca,
+    Math.sin(elapsed * 0.7) * ca,
+  )
+  hazeIntensity.value = ap.distortionIntensity + smoothedEnergy * 0.004
+  hazeTime.value = elapsed
 })
 </script>
 
 <template>
-  <!-- Orbiting camera — slow continuous loop around the scene -->
-  <TresPerspectiveCamera ref="cameraRef" :position="[0, -2.7, 6]" :fov="45" />
+  <TresPerspectiveCamera ref="cameraRef" :position="[0, 0, 6]" :fov="45" />
+  <TresAmbientLight :intensity="0.02" />
 
-  <!-- Lighting -->
-  <TresAmbientLight :intensity="0.08" />
-  <!-- White key light — keeps chrome readable even in IDLE -->
-  <TresPointLight :position="[3, 4, 3]" :intensity="0.4" />
+  <!-- Star field (background) -->
+  <TresPoints :geometry="starGeo" :material="starMat" />
 
-  <!-- Colored lights — close to core for broad color washes on glossy surface -->
-  <TresPointLight ref="colorLight0Ref" :position="[0.9, 0.9, 1.2]" :intensity="1" />
-  <TresPointLight ref="colorLight1Ref" :position="[-1.1, 0.3, 0.8]" :intensity="0.7" />
-  <TresPointLight ref="colorLight2Ref" :position="[0.2, -0.8, -1.0]" :intensity="0.5" />
+  <!-- Nebula fog (mid-ground, behind particles) -->
+  <TresMesh :geometry="nebulaGeo" :material="nebulaMat" :render-order="-1" />
 
-  <!-- Core sphere -->
-  <TresMesh
-    ref="coreRef"
-    :geometry="coreGeo"
-    :material="coreMat"
-  />
+  <!-- Main particle system -->
+  <TresPoints :geometry="particleGeo" :material="particleMat" />
 
-  <!-- Ring segments -->
-  <TresMesh
-    v-for="(geo, idx) in ringGeos"
-    :key="`ring-${idx}`"
-    :ref="(el) => { ringRefs[idx]!.value = el as unknown as Mesh | null }"
-    :geometry="geo"
-    :material="ringMats[idx] ?? coreMat"
-  />
-
-  <!-- Rectangular panel -->
-  <TresMesh
-    ref="panelRef"
-    :geometry="panelGeo"
-    :material="panelMat"
-  />
-
-  <!-- Floating particles -->
-  <TresPoints
-    ref="particlesRef"
-    :geometry="particleGeo"
-    :material="particleMat"
-  />
-
-  <!-- Post-processing -->
   <Suspense>
     <EffectComposerPmndrs>
       <BloomPmndrs
         :intensity="bloomIntensity"
-        :luminance-threshold="0.1"
+        :luminance-threshold="0.7"
         :luminance-smoothing="0.3"
         :mipmap-blur="true"
+      />
+      <ChromaticAberrationPmndrs
+        :offset="chromaticOffset"
+        :radial-modulation="true"
+        :modulation-offset="0.3"
+      />
+      <HeatHazePmndrs
+        :intensity="hazeIntensity"
+        :time="hazeTime"
       />
     </EffectComposerPmndrs>
   </Suspense>

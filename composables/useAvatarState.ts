@@ -1,102 +1,88 @@
-type CoreShape = 'sphere' | 'diamond' | 'hexagon'
-type DisplayState = 'IDLE' | 'PASSIVE' | 'HEARING' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
+import type { ShapeName } from '~/utils/shapes'
+
+type DisplayState = 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING' | 'GRACE'
 
 interface RGB { r: number; g: number; b: number }
 
-/** Params the render loop (ButlerScene.vue) consumes — all numeric for lerping. */
+/** Numeric params consumed by the render loop — all smoothly lerped. */
 export interface AvatarParams {
-  ringSpeed: number
-  coreIntensity: number
   primaryR: number
   primaryG: number
   primaryB: number
-  particleSpeed: number
-  particleOpacity: number
-  panelFlipping: number
-  bloomIntensity: number
-  coreScale: number
-  coreSpin: number
-  coreDistort: number
-  coreMorph: number       // 0 = sphere, 1 = target shape (resolved from CoreShape)
-  coreShape: number       // 0 = diamond target, 1 = hexagon target (resolved from CoreShape)
+  condense: number          // 0 = galaxy, 1 = fully condensed into shape
+  shapeMorph: number        // 0 = previous shape, 1 = current shape (reset on shape change)
+  flowSpeed: number         // galaxy orbit/drift speed
+  wobbleAmount: number      // organic sine wobble amplitude
+  particleBrightness: number // base opacity/brightness
+  bloomIntensity: number    // post-processing bloom
+  spinSpeed: number         // rotation speed of condensed shape
+  chromaticIntensity: number // chromatic aberration offset magnitude
+  distortionIntensity: number // heat-haze distortion strength (center-focused)
 }
 
 // ── Palette ──────────────────────────────────────────────────────────────────
-const AP_GREY      : RGB = { r: 0.45, g: 0.45, b: 0.45 }
-const AP_ORANGE    : RGB = { r: 1.0,  g: 0.4,  b: 0.0 }
-const AP_WARMWHITE : RGB = { r: 1.0,  g: 0.85, b: 0.5 }
-const AP_BLUE      : RGB = { r: 0.2,  g: 0.667, b: 1.0 }
-const AP_AMBER     : RGB = { r: 1.0,  g: 0.65, b: 0.1 }
-const AP_GREEN     : RGB = { r: 0.2,  g: 0.9,  b: 0.3 }
-const AP_PURPLE    : RGB = { r: 0.65, g: 0.2,  b: 0.9 }
+const AP_GREY: RGB = { r: 0.45, g: 0.45, b: 0.45 }
+const AP_ORANGE: RGB = { r: 1.0, g: 0.4, b: 0.0 }
+const AP_WARMWHITE: RGB = { r: 1.0, g: 0.85, b: 0.5 }
+const AP_BLUE: RGB = { r: 0.2, g: 0.667, b: 1.0 }
+const AP_AMBER: RGB = { r: 1.0, g: 0.65, b: 0.1 }
+const AP_GREEN: RGB = { r: 0.2, g: 0.9, b: 0.3 }
+const AP_PURPLE: RGB = { r: 0.65, g: 0.2, b: 0.9 }
 
-// ── Shape resolution ─────────────────────────────────────────────────────────
-function resolveShape(shape: CoreShape): { coreMorph: number; coreShape: number } {
-  switch (shape) {
-    case 'sphere':  return { coreMorph: 0, coreShape: 0 }
-    case 'diamond': return { coreMorph: 1, coreShape: 0 }
-    case 'hexagon': return { coreMorph: 1, coreShape: 1 }
-  }
-}
-
-// ── Defaults + overrides ─────────────────────────────────────────────────────
+// ── State definitions ────────────────────────────────────────────────────────
 interface StateOverride {
   color: RGB
-  shape: CoreShape
-  ringSpeed: number
-  coreIntensity: number
-  particleSpeed: number
-  particleOpacity: number
-  panelFlipping: number
+  shape: ShapeName | null   // null = galaxy (no condensed shape)
+  condense: number
+  flowSpeed: number
+  wobbleAmount: number
+  particleBrightness: number
   bloomIntensity: number
-  coreScale: number
-  coreSpin: number
-  coreDistort: number
+  spinSpeed: number
+  chromaticIntensity: number
+  distortionIntensity: number
 }
 
 const DEFAULTS: StateOverride = {
   color: AP_GREY,
-  shape: 'sphere',
-  ringSpeed: 0.06,
-  coreIntensity: 0.7,
-  particleSpeed: 0.03,
-  particleOpacity: 0.15,
-  panelFlipping: 0,
-  bloomIntensity: 0.5,
-  coreScale: 1.0,
-  coreSpin: 0,
-  coreDistort: 0,
+  shape: null,
+  condense: 0,
+  flowSpeed: 0.03,
+  wobbleAmount: 0.02,
+  particleBrightness: 0.15,
+  bloomIntensity: 0.03,
+  spinSpeed: 0,
+  chromaticIntensity: 0.003,
+  distortionIntensity: 0,
 }
 
 const STATE_OVERRIDES: Record<DisplayState, Partial<StateOverride>> = {
-  IDLE:      {},
-  PASSIVE:   { color: AP_ORANGE, ringSpeed: 0.04, coreIntensity: 0.5, particleSpeed: 0.02, particleOpacity: 0.12, bloomIntensity: 0.35 },
-  HEARING:   { color: AP_WARMWHITE, ringSpeed: 0.15, coreIntensity: 1.2, particleSpeed: 0.08, particleOpacity: 0.3, bloomIntensity: 1.0 },
-  LISTENING: { color: AP_BLUE, ringSpeed: 0.35, coreIntensity: 1.8, particleSpeed: 0.12, particleOpacity: 0.4, bloomIntensity: 1.4, coreScale: 0.8 },
-  THINKING:  { color: AP_AMBER, ringSpeed: 0.5, coreIntensity: 2.2, particleSpeed: 0.25, particleOpacity: 0.5, panelFlipping: 1.0, bloomIntensity: 1.8, coreSpin: 6.0, coreDistort: 0.08, shape: 'hexagon' },
-  EXECUTING: { color: AP_GREEN, ringSpeed: 0.4, coreIntensity: 2.2, particleSpeed: 0.2, particleOpacity: 0.5, bloomIntensity: 1.6, coreDistort: 0.15 },
-  SPEAKING:  { color: AP_PURPLE, ringSpeed: 0.25, coreIntensity: 1.6, particleSpeed: 0.12, particleOpacity: 0.4, bloomIntensity: 1.2, coreDistort: 0.1, shape: 'diamond' },
+  IDLE: { shape: 'ring', condense: 0.7, flowSpeed: 0.04, particleBrightness: 0.25, wobbleAmount: 0.025, chromaticIntensity: 0.003 },
+  LISTENING: { color: AP_BLUE, shape: 'triangle', condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.006, distortionIntensity: 0.003 },
+  THINKING: { color: AP_AMBER, shape: 'cube', condense: 1, flowSpeed: 0.15, wobbleAmount: 0.015, particleBrightness: 0.35, bloomIntensity: 0.15, spinSpeed: 1.2, chromaticIntensity: 0.012, distortionIntensity: 0.008 },
+  SPEAKING: { color: AP_ORANGE, condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.008, distortionIntensity: 0.005 },
+  GRACE: { color: AP_ORANGE, shape: 'ring', condense: 0.7, flowSpeed: 0.04, particleBrightness: 0.25, wobbleAmount: 0.025, chromaticIntensity: 0.003 },
 }
 
-/** Resolve a state override into the full numeric AvatarParams for the render loop. */
+/** Pool of shapes used for SPEAKING — a random one is picked each time, never the same twice. */
+export const SPEAKING_SHAPES: ShapeName[] = ['infinity', 'pi', 'alpha', 'omega']
+
+/** Resolve overrides into full numeric AvatarParams. */
 function resolveParams(overrides: Partial<StateOverride>): AvatarParams {
   const merged = { ...DEFAULTS, ...overrides }
-  const { coreMorph, coreShape } = resolveShape(merged.shape)
   return {
-    ringSpeed: merged.ringSpeed,
-    coreIntensity: merged.coreIntensity,
     primaryR: merged.color.r,
     primaryG: merged.color.g,
     primaryB: merged.color.b,
-    particleSpeed: merged.particleSpeed,
-    particleOpacity: merged.particleOpacity,
-    panelFlipping: merged.panelFlipping,
+    condense: merged.condense,
+    shapeMorph: 1, // target is always 1 — reset to 0 on shape change
+    flowSpeed: merged.flowSpeed,
+    wobbleAmount: merged.wobbleAmount,
+    particleBrightness: merged.particleBrightness,
     bloomIntensity: merged.bloomIntensity,
-    coreScale: merged.coreScale,
-    coreSpin: merged.coreSpin,
-    coreDistort: merged.coreDistort,
-    coreMorph,
-    coreShape,
+    spinSpeed: merged.spinSpeed,
+    chromaticIntensity: merged.chromaticIntensity,
+    distortionIntensity: merged.distortionIntensity,
   }
 }
 
@@ -114,15 +100,59 @@ function cloneParams(src: AvatarParams): AvatarParams {
   return out
 }
 
-export function useAvatarState(activeState: Ref<string>) {
-  const current = cloneParams(STATE_PARAMS[(activeState.value as DisplayState) ?? 'IDLE'] ?? STATE_PARAMS.IDLE)
+/** Resolve the shape name for a given display state (null = galaxy, no shape). */
+function resolveShape(state: DisplayState): ShapeName | null {
+  const override = STATE_OVERRIDES[state]
+  return override?.shape ?? DEFAULTS.shape
+}
 
-  function update(dt: number): void {
-    const target = STATE_PARAMS[activeState.value as DisplayState] ?? STATE_PARAMS.IDLE
+export function useAvatarState(activeState: Ref<string>) {
+  const initial = (activeState.value as DisplayState) ?? 'IDLE'
+  const current = cloneParams(STATE_PARAMS[initial] ?? STATE_PARAMS.IDLE)
+  let currentShape: ShapeName | null = resolveShape(initial)
+  let prevDisplayState: DisplayState | null = null
+  let lastSpeakingShape: ShapeName | null = null
+
+  function update(dt: number): { shapeChanged: ShapeName | null } {
+    const state = (activeState.value as DisplayState) ?? 'IDLE'
+    const target = STATE_PARAMS[state] ?? STATE_PARAMS.IDLE
+
+    // Determine target shape — SPEAKING picks randomly from pool
+    let newShape: ShapeName | null
+    if (state === 'SPEAKING') {
+      if (prevDisplayState !== 'SPEAKING') {
+        // Entering SPEAKING — pick random shape, never same as last
+        const choices = SPEAKING_SHAPES.filter(s => s !== lastSpeakingShape)
+        newShape = choices[Math.floor(Math.random() * choices.length)]!
+        lastSpeakingShape = newShape
+      } else {
+        // Already speaking — keep current shape
+        newShape = currentShape
+      }
+    } else {
+      newShape = resolveShape(state)
+    }
+
+    prevDisplayState = state
+
+    // Detect shape change — only when moving to a NEW named shape
+    let shapeChanged: ShapeName | null = null
+    if (newShape !== null && newShape !== currentShape) {
+      currentShape = newShape
+      current.shapeMorph = 0 // reset so it lerps from old shape to new
+      shapeChanged = newShape
+    } else if (newShape === null && currentShape !== null) {
+      // Going to galaxy — shape stays for condense→0 dissolve, no swap needed
+      currentShape = null
+    }
+
+    // Lerp all numeric params toward target
     const t = 1 - Math.exp(-8 * dt)
     for (const k of PARAM_KEYS) {
       current[k] += (target[k] - current[k]) * t
     }
+
+    return { shapeChanged }
   }
 
   return { current, update }

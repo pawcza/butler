@@ -44,7 +44,7 @@ light: turn_on, turn_off | switch: turn_on, turn_off | climate: set_temperature,
 </services>
 
 <rules>
-1. ALL actions and queries (devices, calendar, todos, state) require tool calls — even if similar data is in the conversation. Never fabricate results.
+1. You MUST use tool calls for ALL device actions, state queries, calendar, and todo operations. NEVER describe what you would do — actually call the tool. If the user asks to turn on a heater, call ha_call_service. If they ask about device state, call ha_get_state. No exceptions.
 2. Only use entity IDs from the entities list. Use ha_bulk_control for 2+ entities.
 3. Device responses: 1-2 sentences. Knowledge questions: answer thoroughly.
 4. Use the Days line above for date references. Convert durations to seconds for timers.
