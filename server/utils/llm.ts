@@ -16,9 +16,13 @@ interface OllamaStreamChunk {
   eval_duration?: number
 }
 
-/** Strip any leaked <think>...</think> blocks from model output. */
+/** Strip <think>...</think> blocks (closed or unclosed) from model output. */
 export function stripThinking(content: string): string {
-  return content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  // Closed blocks: <think>...</think>
+  let result = content.replace(/<think>[\s\S]*?<\/think>/g, '')
+  // Unclosed block: <think>... (rest of string)
+  result = result.replace(/<think>[\s\S]*/g, '')
+  return result.trim()
 }
 
 export async function chatWithTools(
@@ -93,9 +97,17 @@ export async function chatStream(
   messages: OllamaMessage[],
   onToken: (token: string) => void,
 ): Promise<OllamaMessage> {
+  // Prepend /no_think to suppress thinking in the final text response — no tool
+  // reasoning needed here, just a short spoken reply. This keeps it fast.
+  const noThinkMessages = messages.map((m, i) =>
+    i === 0 && m.role === 'system'
+      ? { ...m, content: `/no_think\n${m.content}` }
+      : m,
+  )
+
   const body: Record<string, unknown> = {
     model: config.OLLAMA_MODEL,
-    messages,
+    messages: noThinkMessages,
     stream: true,
     keep_alive: -1,
     // No tools — this is the final text-only response
@@ -171,10 +183,13 @@ export async function chatStream(
         if (token) {
           fullContent += token
 
-          // Suppress <think>...</think> tokens
-          if (token.includes('<think>')) inThinkBlock = true
+          // Suppress <think>...</think> tokens — check accumulated content
+          // to handle tags split across multiple tokens
+          if (!inThinkBlock && fullContent.includes('<think>')) inThinkBlock = true
           if (!inThinkBlock) onToken(token)
-          if (token.includes('</think>')) inThinkBlock = false
+          if (inThinkBlock && fullContent.includes('</think>')) {
+            inThinkBlock = false
+          }
         }
 
         if (chunk.done) {
