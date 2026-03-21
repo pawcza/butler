@@ -55,7 +55,7 @@ All read from process.env by `server/utils/config.ts`. Nuxt loads `.env` automat
 | `HA_URL` | — | Home Assistant base URL |
 | `HA_TOKEN` | — | HA long-lived access token |
 | `OLLAMA_URL` | — | Ollama base URL |
-| `OLLAMA_MODEL` | `qwen3:8b` | LLM model |
+| `OLLAMA_MODEL` | `qwen3.5:9b` | LLM model |
 | `WHISPER_URL` | — | Whisper API URL (STT, model configured in Docker) |
 | `PIPER_URL` | — | Speaches URL (TTS) |
 | `PIPER_MODEL` | `speaches-ai/Kokoro-82M-v1.0-ONNX` | TTS model |

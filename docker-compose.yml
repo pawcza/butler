@@ -11,6 +11,11 @@ services:
       - ./data:/app/data
     networks:
       - proxynet
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
 
 # ── Network ───────────────────────────────────────────────────────────────────
 # proxynet is the existing Unraid bridge network created by NginxProxyManager.

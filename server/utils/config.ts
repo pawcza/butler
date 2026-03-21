@@ -4,12 +4,14 @@ const schema = z.object({
   HA_URL: z.string().url('HA_URL must be a valid URL'),
   HA_TOKEN: z.string().min(1, 'HA_TOKEN is required'),
   OLLAMA_URL: z.string().url('OLLAMA_URL must be a valid URL'),
-  OLLAMA_MODEL: z.string().min(1).default('qwen3:14b'),
+  OLLAMA_MODEL: z.string().min(1).default('qwen3.5:9b'),
   WHISPER_URL: z.string().url('WHISPER_URL must be a valid URL'),
   PIPER_URL: z.string().url('PIPER_URL must be a valid URL'),
   PIPER_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
   PIPER_VOICE: z.string().min(1).default('af_heart'),
   PIPER_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
+  AUTH_USER: z.string().min(1).optional(),
+  AUTH_PASS: z.string().min(1).optional(),
 })
 
 const result = schema.safeParse(process.env)
