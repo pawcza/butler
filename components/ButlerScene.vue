@@ -259,13 +259,22 @@ onBeforeRender(({ delta }) => {
   nu['u_intensity']!.value = 0.02 + ap.condense * 0.02 + smoothedEnergy * 0.01
 
   // --- Camera orbit ---
+  // When a shape is condensed, snap camera to front view (z-axis) so shapes
+  // aren't seen edge-on. When galaxy mode, orbit freely.
   const cam = cameraRef.value
   if (cam) {
     const targetSpeed = ORBIT_SPEED_MAP[props.activeState] ?? 0.06
     orbitSpeed += (targetSpeed - orbitSpeed) * (1 - Math.exp(-4 * dt))
     orbitAngle += orbitSpeed * dt
-    cam.position.x = Math.sin(orbitAngle) * ORBIT_RADIUS
-    cam.position.z = Math.cos(orbitAngle) * ORBIT_RADIUS
+
+    // Compute front-facing angle: nearest multiple of 2π (camera at z-axis)
+    const frontAngle = Math.round(orbitAngle / (Math.PI * 2)) * Math.PI * 2
+    // Blend toward front when condensed, free orbit when galaxy
+    const condenseBlend = ap.condense * ap.condense // ease-in
+    const effectiveAngle = orbitAngle + (frontAngle - orbitAngle) * condenseBlend
+
+    cam.position.x = Math.sin(effectiveAngle) * ORBIT_RADIUS
+    cam.position.z = Math.cos(effectiveAngle) * ORBIT_RADIUS
     cam.position.y = ORBIT_ELEVATION * ORBIT_RADIUS
     cam.lookAt(lookTarget)
   }
