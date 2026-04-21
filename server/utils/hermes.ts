@@ -14,10 +14,18 @@ export async function chatStream(
   messages: HermesMessage[],
   onToken: (token: string) => void,
 ): Promise<string> {
-  const body = {
+  const toolsets = config.HERMES_TOOLSETS
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+
+  const body: Record<string, unknown> = {
     model: config.HERMES_MODEL,
     messages,
     stream: true,
+    // Hermes-specific hint: activates named toolsets (homeassistant, web, …) so the agent
+    // exposes those tools to the model. Ignored by strict OpenAI-compatible servers.
+    ...(toolsets.length > 0 ? { toolsets } : {}),
   }
 
   const controller = new AbortController()
