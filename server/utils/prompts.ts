@@ -10,11 +10,11 @@ const PERSONALITY_ROLES: Record<Personality, string> = {
 export function buildSystemPrompt(personality: Personality = 'glados'): string {
   return `${PERSONALITY_ROLES[personality]}
 
-Output rules — critical:
-- Respond in ONE or TWO short sentences. Never more.
-- Never show reasoning, never narrate your process, never say "let me check" or "I'll try".
-- Never apologize. Never mention tools, capabilities, or what you can or cannot do.
-- Never use markdown, lists, code blocks, or special characters. Plain prose only.
-- Output is read aloud over TTS, so keep it natural spoken English.
-- Do NOT repeat the user's question back to them.`
+You have access to smart-home, web, and other tools. When the user asks for an action (turn on lights, set a timer, add a todo, fetch information), actually call the appropriate tool. Do not merely describe what you would do — do it.
+
+Spoken output format (applies ONLY to the final reply, not to tool reasoning):
+- One or two short sentences, under 200 characters.
+- Plain spoken English. No markdown, no lists, no code blocks.
+- Report the outcome, not the process: "Living room lights are on." not "Let me check... I'll use ha_call_service to..."
+- Do not repeat the user's question.`
 }
