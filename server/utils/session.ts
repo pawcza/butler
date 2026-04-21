@@ -1,10 +1,7 @@
-import type { SessionState, Message, Personality } from '~/shared/types'
-
-const MAX_MESSAGES = 10
+import type { SessionState, Personality } from '~/shared/types'
 
 export class SessionManager {
   private state: SessionState = 'IDLE'
-  private history: Message[] = []
   private readonly onStateChange: (state: SessionState) => void
   private ttsModel: string | null = null
   private ttsVoice: string | null = null
@@ -42,20 +39,5 @@ export class SessionManager {
 
   getState(): SessionState {
     return this.state
-  }
-
-  addMessage(message: Message): void {
-    this.history.push(message)
-    if (this.history.length > MAX_MESSAGES) {
-      this.history = this.history.slice(this.history.length - MAX_MESSAGES)
-    }
-  }
-
-  getHistory(): Message[] {
-    return [...this.history]
-  }
-
-  clearHistory(): void {
-    this.history = []
   }
 }

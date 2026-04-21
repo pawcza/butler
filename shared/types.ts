@@ -10,32 +10,10 @@ export interface PersonalityInfo {
   description: string
 }
 
-export interface ButlerTool {
-  name: string
-  description: string
-  parameters: Record<string, unknown>
-}
-
-export interface Message {
-  role: 'user' | 'assistant'
+/** Single chat message sent to Hermes (OpenAI chat completions shape). */
+export interface HermesMessage {
+  role: 'system' | 'user' | 'assistant'
   content: string
-}
-
-// Ollama native tool calling types
-export interface OllamaToolCall {
-  function: { name: string; arguments: Record<string, unknown> }
-}
-
-export interface OllamaTool {
-  type: 'function'
-  function: { name: string; description: string; parameters: Record<string, unknown> }
-}
-
-export interface OllamaMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string
-  tool_calls?: OllamaToolCall[]
-  tool_name?: string
 }
 
 // WebSocket events: server -> client
@@ -43,7 +21,7 @@ export type ServerEvent =
   | { type: 'state'; state: SessionState }
   | { type: 'transcript'; text: string }
   | { type: 'response'; text: string }
-  /** Streaming response tokens from the final LLM call */
+  /** Streaming response tokens from the LLM */
   | { type: 'response_start' }
   | { type: 'response_delta'; text: string }
   | { type: 'response_end'; text: string }

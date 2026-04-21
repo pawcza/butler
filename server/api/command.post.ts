@@ -14,6 +14,6 @@ export default defineEventHandler(async (event) => {
 
   const events: ServerEvent[] = []
   const session = new SessionManager(() => {})
-  await processCommand(parsed.data.text, session, (e) => events.push(e), 'api')
+  await processCommand(parsed.data.text, session, (e) => events.push(e))
   return { events }
 })

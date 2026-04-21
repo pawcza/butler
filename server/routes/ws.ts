@@ -46,7 +46,7 @@ export default defineWebSocketHandler({
       if (parsed.type === 'ping') {
         send(peer, { type: 'pong' })
       } else if (parsed.type === 'clear_history') {
-        session.clearHistory()
+        // no-op — Hermes owns conversation memory; butler-core is stateless across turns
       } else if (parsed.type === 'set_voice') {
         session.setTtsPreferences(parsed.model, parsed.voice)
         log.info(`voice set: model=${parsed.model} voice=${parsed.voice}`)
@@ -60,7 +60,7 @@ export default defineWebSocketHandler({
         }
         send(peer, { type: 'transcript', text: parsed.text })
         log.info('text command:', JSON.stringify(parsed.text))
-        processCommand(parsed.text, session, (event) => send(peer, event), peer.id).catch((err) => {
+        processCommand(parsed.text, session, (event) => send(peer, event)).catch((err) => {
           log.fail('processCommand threw:', err)
           send(peer, { type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
           session.setState('IDLE')
@@ -73,14 +73,12 @@ export default defineWebSocketHandler({
         return
       }
       log.info(`audio received: ${(buffer.length / 1024).toFixed(1)}KB`)
-      void processAudio(buffer, session, (event) => send(peer, event), peer.id)
+      void processAudio(buffer, session, (event) => send(peer, event))
     }
   },
 
   close(peer) {
-    sessions.get(peer.id)?.clearHistory()
     sessions.delete(peer.id)
-    clearTimersForPeer(peer.id)
   },
 
   error(peer, error) {

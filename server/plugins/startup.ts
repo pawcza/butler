@@ -4,22 +4,6 @@ export default defineNitroPlugin(async () => {
   // Importing config triggers Zod validation — exits process if env is invalid
   const _config = config
 
-  // Verify HA is reachable
-  try {
-    await haFetch('/')
-    log.ok('Home Assistant connected.')
-  } catch (err) {
-    log.fail('Could not reach Home Assistant:', err)
-  }
-
-  buildRegistry()
-
-  try {
-    await refreshEntityList()
-  } catch (err) {
-    log.warn('Could not fetch entity list:', err)
-  }
-
   // Warm up Whisper model so first request isn't slow.
   // Retry a few times — the Whisper container may still be booting.
   const sttLog = createLog('stt')
@@ -27,8 +11,9 @@ export default defineNitroPlugin(async () => {
     try {
       await warmUpStt()
       break
-    } catch {
-      sttLog.warn(`warm-up attempt ${attempt}/5 failed — retrying in 3s…`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      sttLog.warn(`warm-up attempt ${attempt}/5 failed: ${msg} — retrying in 3s…`)
       if (attempt < 5) await new Promise((r) => setTimeout(r, 3000))
     }
   }

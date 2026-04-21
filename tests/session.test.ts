@@ -14,40 +14,6 @@ describe('SessionManager', () => {
     expect(cb).toHaveBeenCalledWith('LISTENING')
   })
 
-  it('adds messages and returns a copy of history', () => {
-    const sm = new SessionManager(vi.fn())
-    sm.addMessage({ role: 'user', content: 'hello' })
-    sm.addMessage({ role: 'assistant', content: 'hi' })
-    const h = sm.getHistory()
-    expect(h).toHaveLength(2)
-    expect(h[0]?.content).toBe('hello')
-  })
-
-  it('caps history at 10 messages, dropping oldest', () => {
-    const sm = new SessionManager(vi.fn())
-    for (let i = 0; i < 12; i++) {
-      sm.addMessage({ role: 'user', content: `msg${i}` })
-    }
-    const h = sm.getHistory()
-    expect(h).toHaveLength(10)
-    expect(h[0]?.content).toBe('msg2')
-  })
-
-  it('getHistory returns a copy, not a reference', () => {
-    const sm = new SessionManager(vi.fn())
-    sm.addMessage({ role: 'user', content: 'x' })
-    const h = sm.getHistory()
-    h.pop()
-    expect(sm.getHistory()).toHaveLength(1)
-  })
-
-  it('clearHistory empties the history', () => {
-    const sm = new SessionManager(vi.fn())
-    sm.addMessage({ role: 'user', content: 'x' })
-    sm.clearHistory()
-    expect(sm.getHistory()).toHaveLength(0)
-  })
-
   it('defaults personality to glados', () => {
     const sm = new SessionManager(vi.fn())
     expect(sm.getPersonality()).toBe('glados')
