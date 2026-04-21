@@ -127,8 +127,10 @@ export async function processCommand(
   try {
     replyText = await chatStream(messages, (token) => emit({ type: 'response_delta', text: token }))
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    log.fail(`chatStream threw: ${msg}`)
     emit({ type: 'response_end', text: '' })
-    emit({ type: 'error', message: `LLM failed: ${err instanceof Error ? err.message : err}` })
+    emit({ type: 'error', message: `LLM failed: ${msg}` })
     session.setState('IDLE')
     return
   }

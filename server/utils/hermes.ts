@@ -3,7 +3,11 @@ import type { HermesMessage } from '~/shared/types'
 const log = createLog('hermes')
 
 interface ChatCompletionChunk {
-  choices: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>
+  choices: Array<{
+    delta?: { content?: string | null; tool_calls?: unknown[]; role?: string }
+    finish_reason?: string | null
+  }>
+  error?: { message?: string }
 }
 
 /**
@@ -55,6 +59,11 @@ export async function chatStream(
   const decoder = new TextDecoder()
   let buffer = ''
   let full = ''
+  let chunkCount = 0
+  let contentChunks = 0
+  let toolCallChunks = 0
+  let otherChunks = 0
+  let firstPayload = ''
 
   try {
     while (true) {
@@ -67,27 +76,43 @@ export async function chatStream(
       while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, newlineIdx).trim()
         buffer = buffer.slice(newlineIdx + 1)
-        if (!line || !line.startsWith('data: ')) continue
+        if (!line) continue
+
+        // Accept "data: ..." (OpenAI-style) but also log anything unexpected
+        if (!line.startsWith('data: ')) {
+          if (line.startsWith(':')) continue // SSE comment
+          log.warn(`non-data SSE line: ${line.slice(0, 200)}`)
+          continue
+        }
 
         const payload = line.slice(6)
         if (payload === '[DONE]') continue
 
-        let chunk: ChatCompletionChunk & { error?: { message?: string } }
+        let chunk: ChatCompletionChunk
         try {
-          chunk = JSON.parse(payload) as typeof chunk
+          chunk = JSON.parse(payload) as ChatCompletionChunk
         } catch (err) {
           log.warn(`could not parse SSE payload: ${err instanceof Error ? err.message : err} | payload: ${payload.slice(0, 200)}`)
           continue
         }
 
+        chunkCount++
+        if (chunkCount === 1) firstPayload = payload.slice(0, 400)
+
         if (chunk.error) {
           throw new Error(`Hermes stream error: ${chunk.error.message ?? JSON.stringify(chunk.error)}`)
         }
 
-        const token = chunk.choices?.[0]?.delta?.content
+        const delta = chunk.choices?.[0]?.delta
+        const token = delta?.content
         if (token) {
+          contentChunks++
           full += token
           onToken(token)
+        } else if (delta?.tool_calls) {
+          toolCallChunks++
+        } else {
+          otherChunks++
         }
       }
     }
@@ -96,6 +121,9 @@ export async function chatStream(
   }
 
   const elapsed = ((performance.now() - t0) / 1000).toFixed(1)
-  log.info(`${elapsed}s stream → "${full.slice(0, 120)}"`)
+  log.info(`${elapsed}s stream (${chunkCount} chunks: ${contentChunks} content, ${toolCallChunks} tool, ${otherChunks} other) → "${full.slice(0, 120)}"`)
+  if (contentChunks === 0) {
+    log.warn(`no content chunks received | first payload: ${firstPayload}`)
+  }
   return full
 }
