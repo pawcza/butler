@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { loadGsap, getGsap } from '~/utils/gsap'
-import { PERSONALITIES } from '~/composables/useVoice'
 
 const {
   state,
@@ -23,16 +22,10 @@ const {
   selectedModel,
   selectedVoice,
   setVoice,
-  selectedPersonality,
-  setPersonality,
 } = useVoice()
 
 function onVoiceChange(payload: { model: string; voice: string }): void {
   setVoice(payload.model, payload.voice)
-}
-
-function onPersonalityChange(id: string): void {
-  setPersonality(id as import('~/shared/types').Personality)
 }
 
 const isRecording = ref(false)
@@ -271,10 +264,7 @@ watch(activeState, async () => {
             :models="availableModels"
             :selected-model="selectedModel"
             :selected-voice="selectedVoice"
-            :personalities="PERSONALITIES"
-            :selected-personality="selectedPersonality"
             @update:voice="onVoiceChange"
-            @update:personality="onPersonalityChange"
           />
         </div>
       </div>

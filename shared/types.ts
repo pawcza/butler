@@ -2,14 +2,6 @@
 
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
-export type Personality = 'glados' | 'butler' | 'professional' | 'flirty'
-
-export interface PersonalityInfo {
-  id: Personality
-  name: string
-  description: string
-}
-
 /** Single chat message sent to Hermes (OpenAI chat completions shape). */
 export interface HermesMessage {
   role: 'system' | 'user' | 'assistant'
@@ -42,4 +34,3 @@ export type ClientMessage =
   | { type: 'clear_history' }
   | { type: 'command'; text: string }
   | { type: 'set_voice'; model: string; voice: string }
-  | { type: 'set_personality'; personality: Personality }

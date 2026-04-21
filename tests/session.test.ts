@@ -14,16 +14,16 @@ describe('SessionManager', () => {
     expect(cb).toHaveBeenCalledWith('LISTENING')
   })
 
-  it('defaults personality to glados', () => {
+  it('tts preferences default to null', () => {
     const sm = new SessionManager(vi.fn())
-    expect(sm.getPersonality()).toBe('glados')
+    expect(sm.getTtsModel()).toBeNull()
+    expect(sm.getTtsVoice()).toBeNull()
   })
 
-  it('setPersonality updates and getPersonality returns it', () => {
+  it('setTtsPreferences updates model and voice', () => {
     const sm = new SessionManager(vi.fn())
-    sm.setPersonality('butler')
-    expect(sm.getPersonality()).toBe('butler')
-    sm.setPersonality('flirty')
-    expect(sm.getPersonality()).toBe('flirty')
+    sm.setTtsPreferences('speaches-ai/Kokoro-82M-v1.0-ONNX', 'af_heart')
+    expect(sm.getTtsModel()).toBe('speaches-ai/Kokoro-82M-v1.0-ONNX')
+    expect(sm.getTtsVoice()).toBe('af_heart')
   })
 })

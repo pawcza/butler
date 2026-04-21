@@ -56,9 +56,6 @@ export default defineWebSocketHandler({
         } else {
           log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
         }
-      } else if (parsed.type === 'set_personality') {
-        session.setPersonality(parsed.personality)
-        log.info(`personality set: ${parsed.personality}`)
       } else if (parsed.type === 'command') {
         if (session.getState() !== 'IDLE') {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })

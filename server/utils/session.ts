@@ -1,11 +1,10 @@
-import type { SessionState, Personality } from '~/shared/types'
+import type { SessionState } from '~/shared/types'
 
 export class SessionManager {
   private state: SessionState = 'IDLE'
   private readonly onStateChange: (state: SessionState) => void
   private ttsModel: string | null = null
   private ttsVoice: string | null = null
-  private personality: Personality = 'glados'
 
   constructor(onStateChange: (state: SessionState) => void) {
     this.onStateChange = onStateChange
@@ -22,14 +21,6 @@ export class SessionManager {
 
   getTtsVoice(): string | null {
     return this.ttsVoice
-  }
-
-  setPersonality(p: Personality): void {
-    this.personality = p
-  }
-
-  getPersonality(): Personality {
-    return this.personality
   }
 
   setState(state: SessionState): void {

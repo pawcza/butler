@@ -1,11 +1,4 @@
-import type { ServerEvent, SessionState, TtsModelInfo, Personality, PersonalityInfo } from '~/shared/types'
-
-export const PERSONALITIES: PersonalityInfo[] = [
-  { id: 'glados', name: 'GLaDOS', description: 'Sardonic, cold, passive-aggressive' },
-  { id: 'butler', name: 'Butler', description: 'Refined, polite British butler' },
-  { id: 'professional', name: 'Professional', description: 'Crisp, efficient, no-nonsense' },
-  { id: 'flirty', name: 'Flirty', description: 'Playful, charming, teasing' },
-]
+import type { ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
 
 export interface Exchange {
   heard: string
@@ -107,11 +100,6 @@ export function useVoice() {
     (typeof localStorage !== 'undefined' && localStorage.getItem('butler-tts-voice')) || '',
   )
 
-  // Personality selection
-  const selectedPersonality = ref<Personality>(
-    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-personality') as Personality | null) || 'glados',
-  )
-
   function startLingerTimer(): void {
     if (lingerTimer !== null) return
     // Scale linger time with assistant text length so long answers have time to be read.
@@ -152,7 +140,6 @@ export function useVoice() {
     if (selectedModel.value && selectedVoice.value) {
       ws.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
     }
-    ws.send(JSON.stringify({ type: 'set_personality', personality: selectedPersonality.value }))
   }
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -560,12 +547,6 @@ export function useVoice() {
     ws?.send(JSON.stringify({ type: 'set_voice', model, voice }))
   }
 
-  function setPersonality(id: Personality): void {
-    selectedPersonality.value = id
-    localStorage.setItem('butler-personality', id)
-    ws?.send(JSON.stringify({ type: 'set_personality', personality: id }))
-  }
-
   // ── Misc ──────────────────────────────────────────────────────────────────────
 
   function sendPing(): void {
@@ -599,10 +580,8 @@ export function useVoice() {
     startRecording,
     stopRecording,
     isInGracePeriod: readonly(isInGracePeriod),
-    selectedPersonality: readonly(selectedPersonality),
     sendPing,
     clearHistory,
     setVoice,
-    setPersonality,
   }
 }
