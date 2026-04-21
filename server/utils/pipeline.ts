@@ -114,13 +114,12 @@ export async function processCommand(
   const lap = () => Date.now() - t0
   session.setState('THINKING')
 
-  const systemPrompt = buildSystemPrompt(session.getPersonality())
+  // Pure relay — Hermes owns the system prompt (SOUL.md), tools, memory, and agent loop.
   const messages: HermesMessage[] = [
-    { role: 'system', content: systemPrompt },
     { role: 'user', content: text },
   ]
 
-  log.info(`▶ "${text}" | system: ${systemPrompt.length}ch`)
+  log.info(`▶ "${text}"`)
 
   emit({ type: 'response_start' })
   let replyText: string
