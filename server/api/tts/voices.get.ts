@@ -1,10 +1,7 @@
 import type { TtsModelInfo } from '~/shared/types'
 
-interface SpeachesVoice {
-  id: string
-  name: string
-  [key: string]: unknown
-}
+/** Speaches returns voices either as plain strings or as objects with id/name. Both shapes are seen across versions. */
+type SpeachesVoice = string | { id?: string; name?: string; [key: string]: unknown }
 
 interface SpeachesModel {
   id: string
@@ -15,6 +12,15 @@ interface SpeachesModel {
 
 interface SpeachesModelsResponse {
   data: SpeachesModel[]
+}
+
+function voiceToString(v: SpeachesVoice): string | null {
+  if (typeof v === 'string') return v.length > 0 ? v : null
+  if (v && typeof v === 'object') {
+    if (typeof v.id === 'string' && v.id.length > 0) return v.id
+    if (typeof v.name === 'string' && v.name.length > 0) return v.name
+  }
+  return null
 }
 
 export default defineEventHandler(async () => {
@@ -45,7 +51,9 @@ export default defineEventHandler(async () => {
     .filter((m) => m.task === 'text-to-speech')
     .map((m) => ({
       id: m.id,
-      voices: m.voices?.map((v) => v.id) ?? [],
+      voices: (m.voices ?? [])
+        .map(voiceToString)
+        .filter((v): v is string => v !== null),
     }))
 
   return {
