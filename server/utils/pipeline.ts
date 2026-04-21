@@ -29,6 +29,26 @@ function isWhisperHallucination(text: string): boolean {
   return WHISPER_HALLUCINATION_PATTERNS.some((p) => p.test(cleaned))
 }
 
+/**
+ * Extract a spoken summary from the full LLM reply: first 1-2 sentences, capped at 240 chars.
+ * The full text still goes to the UI; TTS gets this shortened form to keep speech concise
+ * even when the model rambles or includes reasoning/meta text.
+ */
+function extractSpokenSummary(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= 240) return trimmed
+  const sentences = trimmed.match(/[^.!?…]+[.!?…]+/g)
+  if (!sentences || sentences.length === 0) return trimmed.slice(0, 240).trim()
+  let out = ''
+  for (const s of sentences) {
+    if (out.length + s.length > 240) break
+    out += s
+    const count = (out.match(/[.!?…]/g) ?? []).length
+    if (count >= 2) break
+  }
+  return (out.trim() || trimmed.slice(0, 240)).trim()
+}
+
 type Emitter = (event: ServerEvent) => void
 
 async function speakAndEmit(text: string, session: SessionManager, emit: Emitter): Promise<void> {
@@ -116,10 +136,11 @@ export async function processCommand(
   emit({ type: 'response_end', text: replyText })
   emit({ type: 'response', text: replyText })
 
-  log.info(`+${lap()}ms LLM done → "${replyText.slice(0, 100)}"`)
+  const spoken = extractSpokenSummary(replyText)
+  log.info(`+${lap()}ms LLM done (${replyText.length}ch → speak ${spoken.length}ch) → "${spoken.slice(0, 100)}"`)
 
   const ttsStart = Date.now()
-  await speakAndEmit(replyText, session, emit)
+  await speakAndEmit(spoken, session, emit)
   log.info(`tts +${Date.now() - ttsStart}ms | total +${lap()}ms`)
   session.setState('IDLE')
 }

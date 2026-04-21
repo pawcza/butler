@@ -53,7 +53,7 @@ watch(() => props.visible, async (vis) => {
   <div
     v-if="shown"
     ref="containerEl"
-    class="fixed left-1/2 -translate-x-1/2 z-30 w-[90vw] sm:w-[400px] pointer-events-none space-y-2"
+    class="fixed left-1/2 -translate-x-1/2 z-30 w-[92vw] sm:w-[640px] md:w-[720px] pointer-events-none space-y-2"
     style="bottom: max(2rem, env(safe-area-inset-bottom, 0px))"
   >
     <!-- User bubble (right-aligned) -->

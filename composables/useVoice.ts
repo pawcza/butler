@@ -114,10 +114,14 @@ export function useVoice() {
 
   function startLingerTimer(): void {
     if (lingerTimer !== null) return
+    // Scale linger time with assistant text length so long answers have time to be read.
+    // Baseline 12s, +1s per 50 chars, capped at 40s.
+    const text = streamingText.value ?? ''
+    const linger = Math.min(40_000, 12_000 + Math.floor(text.length / 50) * 1000)
     lingerTimer = setTimeout(() => {
       lingerTimer = null
       bubbleVisible.value = false
-    }, 3000)
+    }, linger)
   }
 
   function startGracePeriod(): void {

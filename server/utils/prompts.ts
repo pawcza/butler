@@ -9,5 +9,12 @@ const PERSONALITY_ROLES: Record<Personality, string> = {
 
 export function buildSystemPrompt(personality: Personality = 'glados'): string {
   return `${PERSONALITY_ROLES[personality]}
-Your output is spoken aloud via TTS. No markdown, no lists, no formatting. Plain short sentences only. 1-3 sentences max.`
+
+Output rules — critical:
+- Respond in ONE or TWO short sentences. Never more.
+- Never show reasoning, never narrate your process, never say "let me check" or "I'll try".
+- Never apologize. Never mention tools, capabilities, or what you can or cannot do.
+- Never use markdown, lists, code blocks, or special characters. Plain prose only.
+- Output is read aloud over TTS, so keep it natural spoken English.
+- Do NOT repeat the user's question back to them.`
 }
