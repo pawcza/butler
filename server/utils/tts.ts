@@ -5,8 +5,15 @@ export interface TtsOptions {
 
 const log = createLog('tts')
 
+/** "null"/empty strings can leak in from stale client-side localStorage; treat them as unset. */
+function usable(v: string | undefined): v is string {
+  return typeof v === 'string' && v.length > 0 && v !== 'null' && v !== 'undefined'
+}
+
 export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffer> {
-  log.info(`synthesize: ${text.length}ch → "${text.slice(0, 100)}"`)
+  const model = usable(opts?.model) ? opts.model : config.PIPER_MODEL
+  const voice = usable(opts?.voice) ? opts.voice : config.PIPER_VOICE
+  log.info(`synthesize: ${text.length}ch | model=${model} voice=${voice} → "${text.slice(0, 100)}"`)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
@@ -16,9 +23,9 @@ export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffe
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: opts?.model ?? config.PIPER_MODEL,
+        model,
         input: text,
-        voice: opts?.voice ?? config.PIPER_VOICE,
+        voice,
         response_format: config.PIPER_RESPONSE_FORMAT,
         speed: 1,
         stream_format: 'audio',

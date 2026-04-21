@@ -48,8 +48,14 @@ export default defineWebSocketHandler({
       } else if (parsed.type === 'clear_history') {
         // no-op — Hermes owns conversation memory; butler-core is stateless across turns
       } else if (parsed.type === 'set_voice') {
-        session.setTtsPreferences(parsed.model, parsed.voice)
-        log.info(`voice set: model=${parsed.model} voice=${parsed.voice}`)
+        const validModel = typeof parsed.model === 'string' && parsed.model.length > 0 && parsed.model !== 'null'
+        const validVoice = typeof parsed.voice === 'string' && parsed.voice.length > 0 && parsed.voice !== 'null'
+        if (validModel && validVoice) {
+          session.setTtsPreferences(parsed.model, parsed.voice)
+          log.info(`voice set: model=${parsed.model} voice=${parsed.voice}`)
+        } else {
+          log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
+        }
       } else if (parsed.type === 'set_personality') {
         session.setPersonality(parsed.personality)
         log.info(`personality set: ${parsed.personality}`)
