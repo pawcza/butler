@@ -72,14 +72,19 @@ export async function chatStream(
         const payload = line.slice(6)
         if (payload === '[DONE]') continue
 
-        let chunk: ChatCompletionChunk
+        let chunk: ChatCompletionChunk & { error?: { message?: string } }
         try {
-          chunk = JSON.parse(payload) as ChatCompletionChunk
-        } catch {
+          chunk = JSON.parse(payload) as typeof chunk
+        } catch (err) {
+          log.warn(`could not parse SSE payload: ${err instanceof Error ? err.message : err} | payload: ${payload.slice(0, 200)}`)
           continue
         }
 
-        const token = chunk.choices[0]?.delta?.content
+        if (chunk.error) {
+          throw new Error(`Hermes stream error: ${chunk.error.message ?? JSON.stringify(chunk.error)}`)
+        }
+
+        const token = chunk.choices?.[0]?.delta?.content
         if (token) {
           full += token
           onToken(token)
