@@ -18,10 +18,19 @@ export async function chatStream(
   messages: HermesMessage[],
   onToken: (token: string) => void,
 ): Promise<string> {
-  const body = {
+  const toolsets = config.HERMES_TOOLSETS
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+
+  const body: Record<string, unknown> = {
     model: config.HERMES_MODEL,
     messages,
     stream: true,
+    // Hermes activation signal — tells the API server which capability bundles to expose
+    // (ha_list_entities, ha_call_service, etc.). Without this hint the OpenAI endpoint
+    // defaults to no tools and Claude has to improvise. CLI analogue: `hermes chat -t ...`.
+    ...(toolsets.length > 0 ? { toolsets } : {}),
   }
 
   const controller = new AbortController()
