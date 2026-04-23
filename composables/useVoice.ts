@@ -1,4 +1,59 @@
-import type { ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
+import type { BlockKind, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
+import { CONVERSATION_ID_PATTERN } from '~/shared/text'
+
+/** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest come from Hermes output items. */
+export interface LogItem {
+  id: string
+  kind: 'user' | BlockKind
+  tool?: string
+  text: string
+  streaming: boolean
+}
+
+const STORAGE_KEYS = {
+  chatLog: 'butler-chat-log',
+  conversationId: 'butler-conversation-id',
+  ttsModel: 'butler-tts-model',
+  ttsVoice: 'butler-tts-voice',
+} as const
+/** Hard cap on bubbles — bounds both localStorage and in-memory reactive cost. */
+const MAX_LOG_ITEMS = 200
+
+function loadChatLog(): LogItem[] {
+  if (typeof localStorage === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.chatLog)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as LogItem[]
+    // A refresh mid-stream leaves `streaming: true` stuck — clear it so bubbles don't render a caret.
+    return parsed.map((item) => ({ ...item, streaming: false }))
+  } catch {
+    return []
+  }
+}
+
+function saveChatLog(log: readonly LogItem[]): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(STORAGE_KEYS.chatLog, JSON.stringify(log))
+  } catch {
+    // Quota exceeded or private mode — silently skip; next save will retry.
+  }
+}
+
+function loadOrCreateConversationId(): string {
+  if (typeof localStorage === 'undefined') return `butler-${randomId()}`
+  const existing = localStorage.getItem(STORAGE_KEYS.conversationId)
+  if (existing && CONVERSATION_ID_PATTERN.test(existing)) return existing
+  const fresh = `butler-${randomId()}`
+  localStorage.setItem(STORAGE_KEYS.conversationId, fresh)
+  return fresh
+}
+
+function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 export interface Exchange {
   heard: string
@@ -57,9 +112,9 @@ let audioChunks: Blob[] = []
 let audioCtx: AudioContext | null = null
 let pendingTranscript = ''
 let isPlayingAudio = false
+/** FIFO queue of audio chunks received from the server while another one is still playing. */
+const audioQueue: Array<{ base64: string; format: 'mp3' | 'wav' }> = []
 let recordingGen = 0
-let lingerTimer: ReturnType<typeof setTimeout> | null = null
-let userBubbleTimer: ReturnType<typeof setTimeout> | null = null
 
 // Module-level audio energy — shared across composable re-invocations
 const audioEnergy = ref(0)
@@ -73,13 +128,9 @@ export function useVoice() {
   const currentTranscript = ref('')
   const error = ref<string | null>(null)
 
-  // Streaming LLM response
-  const streamingText = ref('')
+  // Persistent chat log — hydrated from localStorage so bubbles survive refresh.
+  const chatLog = ref<LogItem[]>(loadChatLog())
   const isStreaming = ref(false)
-
-  // Bubble overlay — explicit visibility flag (texts cleared on next interaction, not during fade-out)
-  const bubbleVisible = ref(false)
-  const bubbleUserText = ref('')
 
   // Passive listening
   const passiveEnabled = ref(true)
@@ -94,23 +145,11 @@ export function useVoice() {
   // TTS voice selection
   const availableModels = ref<TtsModelInfo[]>([])
   const selectedModel = ref(
-    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-tts-model')) || '',
+    (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEYS.ttsModel)) || '',
   )
   const selectedVoice = ref(
-    (typeof localStorage !== 'undefined' && localStorage.getItem('butler-tts-voice')) || '',
+    (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEYS.ttsVoice)) || '',
   )
-
-  function startLingerTimer(): void {
-    if (lingerTimer !== null) return
-    // Scale linger time with assistant text length so long answers have time to be read.
-    // Baseline 12s, +1s per 50 chars, capped at 40s.
-    const text = streamingText.value ?? ''
-    const linger = Math.min(40_000, 12_000 + Math.floor(text.length / 50) * 1000)
-    lingerTimer = setTimeout(() => {
-      lingerTimer = null
-      bubbleVisible.value = false
-    }, linger)
-  }
 
   function startGracePeriod(): void {
     if (!vad || !isPassive.value) return
@@ -137,9 +176,34 @@ export function useVoice() {
 
   function resyncPreferences(): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
+    // Re-read from localStorage each time so clearHistory's fresh id is picked up on reconnect.
+    ws.send(JSON.stringify({ type: 'set_conversation', id: loadOrCreateConversationId() }))
     if (selectedModel.value && selectedVoice.value) {
       ws.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
     }
+  }
+
+  // Debounced localStorage write — called explicitly after every chatLog mutation to avoid
+  // paying the cost of a deep reactive watcher on every SSE delta.
+  let persistTimer: ReturnType<typeof setTimeout> | null = null
+  function persistSoon(): void {
+    if (persistTimer !== null) clearTimeout(persistTimer)
+    persistTimer = setTimeout(() => {
+      persistTimer = null
+      saveChatLog(chatLog.value)
+    }, 400)
+  }
+
+  function pushLogItem(item: LogItem): void {
+    chatLog.value.push(item)
+    const excess = chatLog.value.length - MAX_LOG_ITEMS
+    if (excess > 0) chatLog.value.splice(0, excess)
+    persistSoon()
+  }
+
+  /** Blocks usually arrive / update at the tail of the log, so searching right-to-left is O(1) in practice. */
+  function findBlock(blockId: string): LogItem | undefined {
+    return chatLog.value.findLast((b) => b.id === blockId)
   }
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -177,48 +241,51 @@ export function useVoice() {
         // Don't go IDLE while audio is still playing — stay in SPEAKING
         if (event.state === 'IDLE' && isPlayingAudio) break
         state.value = event.state
-        // Start linger when IDLE arrives without audio (e.g. TTS failed)
-        if (event.state === 'IDLE' && bubbleVisible.value && !isPlayingAudio) {
-          startLingerTimer()
-        }
         break
       case 'transcript':
         pendingTranscript = event.text
         currentTranscript.value = event.text
-        // Show user bubble — clear stale assistant text from previous interaction
-        streamingText.value = ''
-        bubbleUserText.value = event.text
-        bubbleVisible.value = true
-        // Auto-dismiss if no response follows (noise/discarded transcript)
-        if (userBubbleTimer !== null) clearTimeout(userBubbleTimer)
-        userBubbleTimer = setTimeout(() => {
-          userBubbleTimer = null
-          bubbleUserText.value = ''
-          bubbleVisible.value = false
-        }, 3000)
+        audioQueue.length = 0
+        pushLogItem({
+          id: `user-${randomId()}`,
+          kind: 'user',
+          text: event.text,
+          streaming: false,
+        })
         break
       case 'response_start':
-        // Cancel user bubble auto-dismiss — a response is coming
-        if (userBubbleTimer !== null) {
-          clearTimeout(userBubbleTimer)
-          userBubbleTimer = null
-        }
-        // Cancel any pending linger timer — new response replaces old
-        if (lingerTimer !== null) {
-          clearTimeout(lingerTimer)
-          lingerTimer = null
-        }
-        streamingText.value = ''
         isStreaming.value = true
-        bubbleVisible.value = true
         break
-      case 'response_delta':
-        streamingText.value += event.text
+      case 'block_start': {
+        const item: LogItem = {
+          id: event.blockId,
+          kind: event.kind,
+          text: '',
+          streaming: true,
+        }
+        if (event.tool !== undefined) item.tool = event.tool
+        pushLogItem(item)
         break
+      }
+      case 'block_delta': {
+        const item = findBlock(event.blockId)
+        if (item) {
+          item.text += event.text
+          persistSoon()
+        }
+        break
+      }
+      case 'block_end': {
+        const item = findBlock(event.blockId)
+        if (item) {
+          item.text = event.text
+          item.streaming = false
+          persistSoon()
+        }
+        break
+      }
       case 'response_end':
         isStreaming.value = false
-        // Empty text = server discarded (multi-round tool call) — reset
-        if (!event.text) streamingText.value = ''
         break
       case 'response':
         if (pendingTranscript) {
@@ -239,58 +306,73 @@ export function useVoice() {
 
   // ── Audio playback ────────────────────────────────────────────────────────────
 
-  async function playAudio(base64: string, _format: 'mp3' | 'wav'): Promise<void> {
-    // Cancel any pending linger timer — new audio replaces old linger
-    if (lingerTimer !== null) {
-      clearTimeout(lingerTimer)
-      lingerTimer = null
+  async function playAudio(base64: string, format: 'mp3' | 'wav'): Promise<void> {
+    // Queue if something's already playing — the current clip's onended will drain us.
+    if (isPlayingAudio) {
+      audioQueue.push({ base64, format })
+      return
     }
     // Set flag BEFORE any async work — the server IDLE event can arrive
     // while decodeAudioData is running and must be blocked.
     isPlayingAudio = true
     try {
-      if (!audioCtx) audioCtx = new AudioContext()
-      const binary = atob(base64)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-      const decoded = await audioCtx.decodeAudioData(bytes.buffer)
-      const source = audioCtx.createBufferSource()
-      source.buffer = decoded
-
-      // Route through analyser for audio energy extraction
-      const analyser = audioCtx.createAnalyser()
-      analyser.fftSize = 256
-      source.connect(analyser)
-      analyser.connect(audioCtx.destination)
-
-      const dataArray = new Uint8Array(analyser.frequencyBinCount)
-      function updateEnergy() {
-        analyser.getByteFrequencyData(dataArray)
-        let sum = 0
-        for (let i = 0; i < dataArray.length; i++) {
-          const v = dataArray[i] ?? 0
-          sum += v * v
-        }
-        audioEnergy.value = Math.sqrt(sum / dataArray.length) / 128
-        analyserRafId = requestAnimationFrame(updateEnergy)
-      }
-      updateEnergy()
-
-      source.onended = () => {
-        cancelAnimationFrame(analyserRafId)
-        audioEnergy.value = 0
-        isPlayingAudio = false
-        state.value = 'IDLE'
-        startLingerTimer()
-      }
-      source.start()
+      await playOne(base64)
     } catch {
-      cancelAnimationFrame(analyserRafId)
-      audioEnergy.value = 0
-      isPlayingAudio = false
-      state.value = 'IDLE'
-      startLingerTimer()
+      // swallowed — finishedPlaying below still runs
     }
+    while (audioQueue.length > 0) {
+      const next = audioQueue.shift()
+      if (!next) break
+      try {
+        await playOne(next.base64)
+      } catch {
+        // keep draining on error
+      }
+    }
+    cancelAnimationFrame(analyserRafId)
+    audioEnergy.value = 0
+    isPlayingAudio = false
+    state.value = 'IDLE'
+  }
+
+  function playOne(base64: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      try {
+        if (!audioCtx) audioCtx = new AudioContext()
+        const binary = atob(base64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        audioCtx.decodeAudioData(bytes.buffer).then((decoded) => {
+          const ctx = audioCtx
+          if (!ctx) { resolve(); return }
+          const source = ctx.createBufferSource()
+          source.buffer = decoded
+
+          const analyser = ctx.createAnalyser()
+          analyser.fftSize = 256
+          source.connect(analyser)
+          analyser.connect(ctx.destination)
+
+          const dataArray = new Uint8Array(analyser.frequencyBinCount)
+          function updateEnergy() {
+            analyser.getByteFrequencyData(dataArray)
+            let sum = 0
+            for (let i = 0; i < dataArray.length; i++) {
+              const v = dataArray[i] ?? 0
+              sum += v * v
+            }
+            audioEnergy.value = Math.sqrt(sum / dataArray.length) / 128
+            analyserRafId = requestAnimationFrame(updateEnergy)
+          }
+          updateEnergy()
+
+          source.onended = () => { resolve() }
+          source.start()
+        }).catch(() => resolve())
+      } catch {
+        resolve()
+      }
+    })
   }
 
   function playAckSound(): void {
@@ -511,6 +593,11 @@ export function useVoice() {
   onUnmounted(() => {
     ws?.close()
     stopPassiveListening()
+    if (persistTimer !== null) {
+      clearTimeout(persistTimer)
+      persistTimer = null
+      saveChatLog(chatLog.value)
+    }
   })
 
   // ── TTS voice selection ──────────────────────────────────────────────────────
@@ -521,8 +608,8 @@ export function useVoice() {
       availableModels.value = data.models
 
       // Init from localStorage or server defaults
-      const storedModel = localStorage.getItem('butler-tts-model')
-      const storedVoice = localStorage.getItem('butler-tts-voice')
+      const storedModel = localStorage.getItem(STORAGE_KEYS.ttsModel)
+      const storedVoice = localStorage.getItem(STORAGE_KEYS.ttsVoice)
       if (storedModel && storedVoice) {
         selectedModel.value = storedModel
         selectedVoice.value = storedVoice
@@ -542,8 +629,8 @@ export function useVoice() {
   function setVoice(model: string, voice: string): void {
     selectedModel.value = model
     selectedVoice.value = voice
-    localStorage.setItem('butler-tts-model', model)
-    localStorage.setItem('butler-tts-voice', voice)
+    localStorage.setItem(STORAGE_KEYS.ttsModel, model)
+    localStorage.setItem(STORAGE_KEYS.ttsVoice, voice)
     ws?.send(JSON.stringify({ type: 'set_voice', model, voice }))
   }
 
@@ -556,8 +643,17 @@ export function useVoice() {
   function clearHistory(): void {
     ws?.send(JSON.stringify({ type: 'clear_history' }))
     exchanges.value = []
+    chatLog.value = []
+    audioQueue.length = 0
     currentTranscript.value = ''
     pendingTranscript = ''
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEYS.chatLog)
+      // Mint a fresh conversation id so Hermes treats this as a new thread too.
+      const fresh = `butler-${randomId()}`
+      localStorage.setItem(STORAGE_KEYS.conversationId, fresh)
+      ws?.send(JSON.stringify({ type: 'set_conversation', id: fresh }))
+    }
   }
 
   return {
@@ -566,10 +662,8 @@ export function useVoice() {
     exchanges,
     currentTranscript,
     error,
-    streamingText: readonly(streamingText),
+    chatLog: readonly(chatLog),
     isStreaming: readonly(isStreaming),
-    bubbleVisible: readonly(bubbleVisible),
-    bubbleUserText: readonly(bubbleUserText),
     passiveEnabled,
     isPassive,
     isProcessingWake: readonly(isProcessingWake),

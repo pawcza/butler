@@ -1,4 +1,4 @@
-import type { ServerEvent, HermesMessage } from '~/shared/types'
+import type { ServerEvent } from '~/shared/types'
 
 const log = createLog('pipeline')
 
@@ -29,29 +29,9 @@ function isWhisperHallucination(text: string): boolean {
   return WHISPER_HALLUCINATION_PATTERNS.some((p) => p.test(cleaned))
 }
 
-/**
- * Extract a spoken summary from the full LLM reply: first 1-2 sentences, capped at 240 chars.
- * The full text still goes to the UI; TTS gets this shortened form to keep speech concise
- * even when the model rambles or includes reasoning/meta text.
- */
-function extractSpokenSummary(text: string): string {
-  const trimmed = text.trim()
-  if (trimmed.length <= 240) return trimmed
-  const sentences = trimmed.match(/[^.!?…]+[.!?…]+/g)
-  if (!sentences || sentences.length === 0) return trimmed.slice(0, 240).trim()
-  let out = ''
-  for (const s of sentences) {
-    if (out.length + s.length > 240) break
-    out += s
-    const count = (out.match(/[.!?…]/g) ?? []).length
-    if (count >= 2) break
-  }
-  return (out.trim() || trimmed.slice(0, 240)).trim()
-}
-
 type Emitter = (event: ServerEvent) => void
 
-async function speakAndEmit(text: string, session: SessionManager, emit: Emitter): Promise<void> {
+async function speakChunk(text: string, session: SessionManager, emit: Emitter): Promise<void> {
   session.setState('SPEAKING')
   try {
     const ttsModel = session.getTtsModel()
@@ -114,34 +94,59 @@ export async function processCommand(
   const lap = () => Date.now() - t0
   session.setState('THINKING')
 
-  // Pure relay — Hermes owns the system prompt (SOUL.md), tools, memory, and agent loop.
-  const messages: HermesMessage[] = [
-    { role: 'user', content: text },
-  ]
-
   log.info(`▶ "${text}"`)
 
   emit({ type: 'response_start' })
-  let replyText: string
+
+  // Serialize TTS so audio events emit in order even though multiple chunks may synthesize
+  // concurrently. Each chunk is chained; a failed synth doesn't stop the next one.
+  let ttsChain: Promise<void> = Promise.resolve()
+  let spokenCount = 0
+
+  let finalMessage: string
   try {
-    replyText = await chatStream(messages, (token) => emit({ type: 'response_delta', text: token }))
+    const result = await respond(text, session.getConversationId(), {
+      onBlockStart: (blockId, kind, meta) => {
+        const evt: ServerEvent = { type: 'block_start', blockId, kind }
+        if (meta.tool !== undefined) evt.tool = meta.tool
+        emit(evt)
+      },
+      onBlockDelta: (blockId, delta) => {
+        emit({ type: 'block_delta', blockId, text: delta })
+      },
+      onBlockEnd: (blockId, full) => {
+        emit({ type: 'block_end', blockId, text: full })
+      },
+      onSpeakChunk: (chunk) => {
+        spokenCount += 1
+        ttsChain = ttsChain.catch(() => {}).then(() => speakChunk(chunk, session, emit))
+      },
+    })
+    finalMessage = result.finalMessage.trim()
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    log.fail(`chatStream threw: ${msg}`)
+    log.fail(`respond threw: ${msg}`)
     emit({ type: 'response_end', text: '' })
     emit({ type: 'error', message: `LLM failed: ${msg}` })
     session.setState('IDLE')
     return
   }
-  replyText = replyText.trim() || 'Done.'
-  emit({ type: 'response_end', text: replyText })
-  emit({ type: 'response', text: replyText })
 
-  const spoken = extractSpokenSummary(replyText)
-  log.info(`+${lap()}ms LLM done (${replyText.length}ch → speak ${spoken.length}ch) → "${spoken.slice(0, 100)}"`)
+  // If the model produced no message blocks at all, speak a minimal fallback so the user
+  // hears *something* rather than silence after the spinner stops.
+  if (spokenCount === 0) {
+    const fallback = finalMessage || 'Done.'
+    ttsChain = ttsChain.catch(() => {}).then(() => speakChunk(fallback, session, emit))
+    if (!finalMessage) finalMessage = fallback
+  }
+
+  emit({ type: 'response_end', text: finalMessage })
+  emit({ type: 'response', text: finalMessage })
+
+  log.info(`+${lap()}ms LLM done (chunks=${spokenCount}, ${finalMessage.length}ch total)`)
 
   const ttsStart = Date.now()
-  await speakAndEmit(spoken, session, emit)
-  log.info(`tts +${Date.now() - ttsStart}ms | total +${lap()}ms`)
+  await ttsChain.catch(() => {})
+  log.info(`tts drained +${Date.now() - ttsStart}ms | total +${lap()}ms`)
   session.setState('IDLE')
 }

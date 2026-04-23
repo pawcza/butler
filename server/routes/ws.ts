@@ -56,6 +56,12 @@ export default defineWebSocketHandler({
         } else {
           log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
         }
+      } else if (parsed.type === 'set_conversation') {
+        if (typeof parsed.id === 'string' && session.setConversationId(parsed.id)) {
+          log.info(`conversation set: ${parsed.id}`)
+        } else {
+          log.warn(`ignored invalid set_conversation id=${String(parsed.id)}`)
+        }
       } else if (parsed.type === 'command') {
         if (session.getState() !== 'IDLE') {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })

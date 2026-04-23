@@ -7,10 +7,7 @@ const {
   exchanges,
   currentTranscript,
   error,
-  streamingText,
-  isStreaming,
-  bubbleVisible,
-  bubbleUserText,
+  chatLog,
   startRecording,
   stopRecording,
   clearHistory,
@@ -296,13 +293,11 @@ watch(activeState, async () => {
       </div>
     </div>
 
-    <!-- Chat bubbles — user transcript + streaming LLM response -->
-    <StreamingBubble
-      :user-text="bubbleUserText"
-      :assistant-text="streamingText"
-      :visible="bubbleVisible"
-      :streaming="isStreaming"
-    />
+    <!-- Persistent chat log — accumulates transcripts + Hermes output blocks across the session.
+         ClientOnly: rehydrated from localStorage, so SSR would mismatch. -->
+    <ClientOnly>
+      <ChatLog :log="chatLog" />
+    </ClientOnly>
 
     <!-- Backdrop overlay when panel is open -->
     <Transition
