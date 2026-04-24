@@ -4,15 +4,11 @@ import { loadGsap, getGsap } from '~/utils/gsap'
 const {
   state,
   isConnected,
-  exchanges,
-  currentTranscript,
   error,
   chatLog,
+  sendCommand,
   startRecording,
   stopRecording,
-  clearHistory,
-  passiveEnabled,
-  isPassive,
   isProcessingWake,
   audioEnergy,
   availableModels,
@@ -43,7 +39,6 @@ onMounted(() => {
     isFullscreen.value = !!document.fullscreenElement
   })
 })
-const transcriptEl = ref<HTMLElement | null>(null)
 
 const canInteract = computed(() => isConnected.value && state.value === 'IDLE')
 
@@ -62,12 +57,19 @@ const activeState = computed(() => {
   return state.value
 })
 
-function onPressStart(e: Event): void {
-  e.preventDefault()
+function beginSpeaking(): void {
   if (!canInteract.value) return
   pressStartedAt = Date.now()
   isRecording.value = true
   void startRecording()
+}
+
+function onPressStart(e: Event): void {
+  // Avatar + spacebar path: preventDefault so space doesn't page-scroll and touch doesn't
+  // trigger native gestures on the canvas. Chat log calls beginSpeaking directly so native
+  // scroll can proceed.
+  e.preventDefault()
+  beginSpeaking()
 }
 
 function onPressEnd(): void {
@@ -81,22 +83,12 @@ function onPressEnd(): void {
   stopRecording()
 }
 
-// Spacebar push-to-talk + arrow keys for chat panel + Escape to close
 function handleKeyDown(e: KeyboardEvent): void {
   if (
     document.activeElement?.tagName === 'INPUT' ||
     document.activeElement?.tagName === 'TEXTAREA'
   ) return
-
-  if (e.code === 'Space' && !e.repeat) {
-    onPressStart(e)
-  } else if (e.code === 'ArrowRight' && !panelOpen.value) {
-    panelOpen.value = true
-  } else if (e.code === 'ArrowLeft' && panelOpen.value) {
-    panelOpen.value = false
-  } else if (e.code === 'Escape' && panelOpen.value) {
-    panelOpen.value = false
-  }
+  if (e.code === 'Space' && !e.repeat) onPressStart(e)
 }
 
 function handleKeyUp(e: KeyboardEvent): void {
@@ -113,63 +105,8 @@ onUnmounted(() => {
   window.removeEventListener('keyup', handleKeyUp)
 })
 
-// ── Chat panel state ──────────────────────────────────────────────────────────
-const panelOpen = ref(false)
-const hasUnread = ref(false)
-const panelEl = ref<HTMLElement | null>(null)
-const toggleBtnEl = ref<HTMLElement | null>(null)
-
-// Auto-scroll transcript to bottom
-watch([exchanges, currentTranscript], async () => {
-  await nextTick()
-  if (transcriptEl.value) transcriptEl.value.scrollTop = transcriptEl.value.scrollHeight
-}, { deep: true })
-
-// Notification dot when new messages arrive while panel is closed
-watch(() => exchanges.value.length, () => {
-  if (!panelOpen.value) hasUnread.value = true
-})
-
-// Clear unread when panel opens
-watch(panelOpen, (open) => {
-  if (open) hasUnread.value = false
-})
-
-// GSAP panel slide-in/out
-watch(panelOpen, (open) => {
-  const gsap = getGsap()
-  if (!gsap || !panelEl.value) return
-  gsap.to(panelEl.value, {
-    x: open ? 0 : '-100%',
-    duration: 0.35,
-    ease: open ? 'power3.out' : 'power3.in',
-  })
-})
-
-// Close panel on click outside (mobile backdrop)
-function onBackdropClick(): void {
-  panelOpen.value = false
-}
-
-// Toggle with elastic press animation
-function onTogglePress(): void {
-  const gsap = getGsap()
-  if (gsap && toggleBtnEl.value) {
-    gsap.fromTo(toggleBtnEl.value,
-      { scale: 0.85 },
-      { scale: 1, duration: 0.4, ease: 'elastic.out(1, 0.4)' },
-    )
-  }
-  panelOpen.value = !panelOpen.value
-}
-
-function formatTime(ts: number): string {
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-}
-
 const stateLabel: Record<string, string> = {
-  IDLE: 'Hold to speak',
+  IDLE: 'Hold click or space to speak',
   LISTENING: 'Listening\u2026',
   THINKING: 'Processing\u2026',
   SPEAKING: 'Speaking\u2026',
@@ -192,14 +129,8 @@ const errorEl = ref<HTMLElement | null>(null)
 onMounted(async () => {
   const gsap = await loadGsap()
 
-  // Branding entrance
   if (brandingEl.value) {
     gsap.from(brandingEl.value, { opacity: 0, y: -10, duration: 0.6, ease: 'power2.out', delay: 0.2 })
-  }
-
-  // Initialize panel off-screen (GSAP controls position, not CSS)
-  if (panelEl.value) {
-    gsap.set(panelEl.value, { x: '-100%' })
   }
 })
 
@@ -296,140 +227,24 @@ watch(activeState, async () => {
     <!-- Persistent chat log — accumulates transcripts + Hermes output blocks across the session.
          ClientOnly: rehydrated from localStorage, so SSR would mismatch. -->
     <ClientOnly>
-      <ChatLog :log="chatLog" />
+      <ChatLog
+        :log="chatLog"
+        :can-send="canInteract"
+        @press-start="beginSpeaking"
+        @press-end="onPressEnd"
+        @send="sendCommand"
+      />
     </ClientOnly>
 
-    <!-- Backdrop overlay when panel is open -->
-    <Transition
-      enter-active-class="transition-opacity duration-300"
-      leave-active-class="transition-opacity duration-300"
-      enter-from-class="opacity-0"
-      leave-to-class="opacity-0"
-    >
-      <div
-        v-if="panelOpen"
-        class="fixed inset-0 z-20 bg-black/30 pointer-events-auto"
-        @click="onBackdropClick"
-      />
-    </Transition>
-
-    <!-- Slide-in chat panel + toggle button — GSAP transforms the whole container -->
-    <div
-      ref="panelEl"
-      class="fixed top-0 left-0 z-20 h-[100dvh] w-full sm:w-[380px] -translate-x-full"
-    >
-      <!-- Toggle button — sits at panel's right edge, always clickable -->
-      <button
-        ref="toggleBtnEl"
-        class="absolute top-1/2 left-full -translate-y-1/2 z-30 pointer-events-auto flex items-center justify-center w-8 sm:w-6 h-16 sm:h-14 rounded-r-lg sm:rounded-r-md backdrop-blur-2xl bg-white/15 border border-l-0 border-white/25 text-white hover:bg-white/25 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-ap-blue/40 focus:ring-offset-0"
-        :class="panelOpen ? 'max-sm:hidden' : ''"
-        aria-label="Toggle conversation panel"
-        @click="onTogglePress"
-      >
-        <span class="text-base sm:text-sm font-mono leading-none">{{ panelOpen ? '\u2039' : '\u203A' }}</span>
-        <span
-          v-if="hasUnread && !panelOpen"
-          class="absolute -top-1 -right-1 w-3 h-3 sm:w-2.5 sm:h-2.5 rounded-full bg-ap-orange shadow-[0_0_6px_rgba(255,102,0,0.7)]"
-        />
-      </button>
-
-      <!-- Panel body -->
-      <div class="h-full flex flex-col backdrop-blur-2xl bg-white/10 border-r border-white/20 select-text safe-area-left"
-        :class="panelOpen ? 'pointer-events-auto' : 'pointer-events-none'"
-      >
-        <!-- Panel header -->
-        <div class="shrink-0 flex items-center justify-between px-5 pt-4 pb-3 border-b border-white/10">
-          <span class="text-xs font-mono tracking-[0.2em] uppercase text-gray-400">Conversation</span>
-          <div class="flex items-center gap-2">
-            <button
-              class="text-[10px] font-mono tracking-widest uppercase text-white/70 hover:text-white transition-colors duration-200 focus:outline-none focus:ring-1 focus:ring-ap-blue/40 px-3 py-2 min-h-[44px] min-w-[44px] rounded flex items-center justify-center"
-              aria-label="Clear conversation history"
-              @click="clearHistory"
-            >
-              Clear
-            </button>
-            <button
-              class="text-lg text-white/70 hover:text-white transition-colors duration-200 focus:outline-none focus:ring-1 focus:ring-ap-blue/40 px-2 py-2 min-h-[44px] min-w-[44px] rounded flex items-center justify-center"
-              aria-label="Close conversation panel"
-              @click="panelOpen = false"
-            >
-              &times;
-            </button>
-          </div>
-        </div>
-
-        <!-- Messages area -->
-        <div
-          ref="transcriptEl"
-          class="transcript-scroll flex-1 overflow-y-auto overscroll-contain touch-pan-y px-5 pt-4 pb-6 space-y-4"
-        >
-          <!-- Empty state -->
-          <div
-            v-if="exchanges.length === 0 && !currentTranscript"
-            class="flex items-center justify-center h-full"
-          >
-            <div class="flex flex-col items-center gap-2">
-              <span class="text-sm font-mono tracking-[0.2em] uppercase text-ap-orange/60">Butler</span>
-              <span class="text-[10px] font-mono tracking-[0.15em] uppercase text-ap-muted/50">No conversation yet</span>
-            </div>
-          </div>
-
-          <!-- Exchanges -->
-          <template v-for="(ex, i) in exchanges" :key="i">
-            <div class="space-y-2">
-              <!-- User message -->
-              <div class="flex justify-end">
-                <span class="text-sm font-mono text-ap-blue/80 bg-ap-blue/15 rounded-lg rounded-br-sm px-3 py-1.5 max-w-[85%]">{{ ex.heard }}</span>
-              </div>
-              <!-- Butler reply -->
-              <div class="flex justify-start">
-                <span class="text-sm font-mono text-gray-300 bg-white/5 rounded-lg rounded-bl-sm px-3 py-1.5 max-w-[85%]">{{ ex.reply }}</span>
-              </div>
-              <!-- Timestamp -->
-              <div class="flex justify-center">
-                <span class="text-[10px] font-mono text-ap-muted/50">{{ formatTime(ex.timestamp) }}</span>
-              </div>
-            </div>
-          </template>
-
-          <!-- Live transcript -->
-          <div v-if="currentTranscript" class="flex justify-end opacity-70">
-            <span class="text-sm font-mono text-ap-blue/60 italic bg-ap-blue/5 rounded-lg rounded-br-sm px-3 py-1.5 max-w-[85%]">{{ currentTranscript }}</span>
-          </div>
-        </div>
-
-        <!-- Panel footer — state label -->
-        <div class="shrink-0 flex justify-center py-3 border-t border-white/10 safe-area-bottom">
-          <span
-            class="text-[10px] font-mono tracking-[0.2em] uppercase flex items-center gap-1.5"
-            :class="stateLabelClass"
-          >
-            {{ stateLabel[activeState] ?? activeState }}
-            <span
-              v-if="activeState === 'THINKING'"
-              class="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
-              :class="activeState === 'THINKING' ? 'bg-amber-400' : 'bg-green-400'"
-            />
-          </span>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
 <style scoped>
-.transcript-scroll {
-  mask-image: linear-gradient(to bottom, transparent 0%, black 24px, black calc(100% - 24px), transparent 100%);
-}
-
 /* Safe-area insets for notched devices (iPhone X+, Android with display cutouts) */
 .safe-area-top {
   padding-top: max(1.5rem, env(safe-area-inset-top));
 }
 .safe-area-bottom {
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
-}
-.safe-area-left {
-  padding-left: env(safe-area-inset-left);
 }
 </style>

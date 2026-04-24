@@ -29,6 +29,10 @@ function isWhisperHallucination(text: string): boolean {
   return WHISPER_HALLUCINATION_PATTERNS.some((p) => p.test(cleaned))
 }
 
+export function newTranscriptId(): string {
+  return `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 type Emitter = (event: ServerEvent) => void
 
 async function speakChunk(text: string, session: SessionManager, emit: Emitter): Promise<void> {
@@ -67,7 +71,6 @@ export async function processAudio(
   log.info(`STT: ${sttMs}ms → "${transcript.trim()}"`)
 
   const trimmed = transcript.trim()
-  emit({ type: 'transcript', text: trimmed })
 
   if (trimmed.length < 2 || trimmed.split(/\s+/).length < 2) {
     log.warn(`discarding noise transcript: "${trimmed}" (${sttMs}ms wasted)`)
@@ -81,6 +84,7 @@ export async function processAudio(
     return
   }
 
+  emit({ type: 'transcript', id: newTranscriptId(), text: trimmed })
   await processCommand(transcript, session, emit, t0)
 }
 

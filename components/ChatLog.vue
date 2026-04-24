@@ -4,7 +4,32 @@ import { renderInlineMarkdown, truncatePreview } from '~/shared/text'
 
 const props = defineProps<{
   log: readonly LogItem[]
+  canSend: boolean
 }>()
+
+const emit = defineEmits<{
+  (e: 'pressStart', ev: PointerEvent): void
+  (e: 'pressEnd'): void
+  (e: 'send', text: string): void
+}>()
+
+const draft = ref('')
+const textareaEl = ref<HTMLTextAreaElement | null>(null)
+
+function onSend(): void {
+  const text = draft.value.trim()
+  if (!text || !props.canSend) return
+  emit('send', text)
+  draft.value = ''
+  autoResize()
+}
+
+function autoResize(): void {
+  const el = textareaEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 140)}px`
+}
 
 const scrollEl = ref<HTMLElement | null>(null)
 /** User may have scrolled up to read history — don't yank them back to bottom on each delta. */
@@ -28,62 +53,94 @@ watch(
     scrollEl.value?.scrollTo({ top: scrollEl.value.scrollHeight, behavior: appended ? 'smooth' : 'auto' })
   },
 )
+
+// Press-to-speak on the chat surface. Links stay clickable; scroll keeps working because we
+// don't preventDefault (pointercancel from a touch-scroll aborts the recording).
+function onPointerDown(e: PointerEvent): void {
+  if ((e.target as HTMLElement | null)?.closest('a')) return
+  emit('pressStart', e)
+}
+function onPointerUp(e: PointerEvent): void {
+  if ((e.target as HTMLElement | null)?.closest('a')) return
+  emit('pressEnd')
+}
+function onPointerCancel(): void {
+  emit('pressEnd')
+}
 </script>
 
 <template>
   <div
-    v-if="log.length > 0"
     class="fixed inset-x-0 z-30 pointer-events-none"
     :style="{ bottom: 'calc(3.5rem + env(safe-area-inset-bottom, 0px))' }"
   >
-    <div
-      ref="scrollEl"
-      class="chat-log-scroll mx-auto max-w-[1080px] px-4 pointer-events-auto max-h-[50vh] overflow-y-auto overscroll-contain"
-      @scroll="onScroll"
-    >
-      <TransitionGroup
-        tag="div"
-        name="bubble"
-        class="flex flex-col gap-2 py-12"
+    <div class="mx-auto max-w-[1080px] px-4 flex flex-col gap-2">
+      <div
+        v-if="log.length > 0"
+        ref="scrollEl"
+        class="chat-log-scroll pointer-events-auto max-h-[50vh] overflow-y-auto overscroll-contain"
+        @scroll="onScroll"
+        @pointerdown="onPointerDown"
+        @pointerup="onPointerUp"
+        @pointercancel="onPointerCancel"
       >
-        <div
-          v-for="item in log"
-          :key="item.id"
-          :class="item.kind === 'user' ? 'flex justify-end' : 'flex justify-start'"
+        <TransitionGroup
+          tag="div"
+          name="bubble"
+          class="flex flex-col gap-2 py-12"
         >
           <div
-            v-if="item.kind === 'user'"
-            class="backdrop-blur-xl bg-ap-blue/15 border border-ap-blue/20 rounded-xl rounded-br-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.3)] max-w-[85%]"
+            v-for="item in log"
+            :key="item.id"
+            :class="item.kind === 'user' ? 'flex justify-end' : 'flex justify-start'"
           >
-            <p class="text-sm font-mono text-ap-blue/90 leading-relaxed">{{ item.text }}</p>
+            <div
+              v-if="item.kind === 'user'"
+              class="backdrop-blur-xl bg-ap-blue/15 border border-ap-blue/20 rounded-xl rounded-br-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.3)] max-w-[85%]"
+            >
+              <p class="text-sm font-mono text-ap-blue/90 leading-relaxed">{{ item.text }}</p>
+            </div>
+            <div
+              v-else-if="item.kind === 'message'"
+              class="backdrop-blur-xl bg-black/60 border border-ap-orange/25 rounded-xl rounded-bl-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.5)] max-w-[85%]"
+            >
+              <p class="chat-md text-sm font-mono text-gray-100 leading-relaxed whitespace-pre-wrap">
+                <span v-html="renderInlineMarkdown(item.text)" /><span
+                  v-if="item.streaming"
+                  class="inline-block w-[2px] h-[14px] bg-ap-orange/80 ml-0.5 align-middle animate-pulse"
+                />
+              </p>
+            </div>
+            <div
+              v-else
+              class="backdrop-blur-md bg-black/40 border border-white/5 rounded-lg px-3 py-1.5 max-w-[85%]"
+            >
+              <p class="text-xs font-mono text-gray-500 leading-relaxed">
+                <span class="text-ap-blue/70">{{ item.kind === 'tool_call' ? '→' : '←' }}</span>
+                <template v-if="item.kind === 'tool_call'">
+                  {{ ' ' }}{{ item.tool ?? 'tool' }}<span v-if="item.text" class="text-gray-600"> ({{ truncatePreview(item.text, 80) }})</span><span v-if="item.streaming" class="text-gray-600"> …</span>
+                </template>
+                <template v-else>
+                  {{ ' ' }}{{ truncatePreview(item.text, 140) }}
+                </template>
+              </p>
+            </div>
           </div>
-          <div
-            v-else-if="item.kind === 'message'"
-            class="backdrop-blur-xl bg-black/60 border border-ap-orange/25 rounded-xl rounded-bl-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.5)] max-w-[85%]"
-          >
-            <p class="chat-md text-sm font-mono text-gray-100 leading-relaxed whitespace-pre-wrap">
-              <span v-html="renderInlineMarkdown(item.text)" /><span
-                v-if="item.streaming"
-                class="inline-block w-[2px] h-[14px] bg-ap-orange/80 ml-0.5 align-middle animate-pulse"
-              />
-            </p>
-          </div>
-          <div
-            v-else
-            class="backdrop-blur-md bg-black/40 border border-white/5 rounded-lg px-3 py-1.5 max-w-[85%]"
-          >
-            <p class="text-xs font-mono text-gray-500 leading-relaxed">
-              <span class="text-ap-blue/70">{{ item.kind === 'tool_call' ? '→' : '←' }}</span>
-              <template v-if="item.kind === 'tool_call'">
-                {{ ' ' }}{{ item.tool ?? 'tool' }}<span v-if="item.text" class="text-gray-600"> ({{ truncatePreview(item.text, 80) }})</span><span v-if="item.streaming" class="text-gray-600"> …</span>
-              </template>
-              <template v-else>
-                {{ ' ' }}{{ truncatePreview(item.text, 140) }}
-              </template>
-            </p>
-          </div>
-        </div>
-      </TransitionGroup>
+        </TransitionGroup>
+      </div>
+
+      <div class="pointer-events-auto">
+        <textarea
+          ref="textareaEl"
+          v-model="draft"
+          rows="1"
+          :disabled="!canSend"
+          placeholder="Type to Butler, or hold to speak…"
+          class="chat-input w-full resize-none backdrop-blur-xl bg-black/50 border border-white/10 focus:border-ap-orange/40 focus:outline-none rounded-xl px-4 py-2.5 text-sm font-mono text-gray-100 placeholder:text-gray-500 leading-relaxed transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          @input="autoResize"
+          @keydown.enter.exact.prevent="onSend"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -94,6 +151,9 @@ watch(
   mask-image: linear-gradient(to bottom, transparent 0, black 48px, black calc(100% - 48px), transparent 100%);
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+  /* Tell the browser vertical scrolling is a valid gesture here — it fires pointercancel promptly
+     when a touch resolves into a scroll, so we can abort any would-be recording. */
+  touch-action: pan-y;
 }
 .chat-log-scroll::-webkit-scrollbar {
   width: 4px;

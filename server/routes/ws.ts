@@ -3,7 +3,9 @@ import type { ClientMessage, ServerEvent } from '~/shared/types'
 const log = createLog('ws')
 const sessions = new Map<string, SessionManager>()
 
+/** Persist every emitted event to the server-side chat log, then forward to the peer. */
 function send(peer: { send: (data: string) => void }, event: ServerEvent): void {
+  recordEvent(event)
   peer.send(JSON.stringify(event))
 }
 
@@ -45,8 +47,6 @@ export default defineWebSocketHandler({
 
       if (parsed.type === 'ping') {
         send(peer, { type: 'pong' })
-      } else if (parsed.type === 'clear_history') {
-        // no-op — Hermes owns conversation memory; butler-core is stateless across turns
       } else if (parsed.type === 'set_voice') {
         const validModel = typeof parsed.model === 'string' && parsed.model.length > 0 && parsed.model !== 'null'
         const validVoice = typeof parsed.voice === 'string' && parsed.voice.length > 0 && parsed.voice !== 'null'
@@ -56,18 +56,12 @@ export default defineWebSocketHandler({
         } else {
           log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
         }
-      } else if (parsed.type === 'set_conversation') {
-        if (typeof parsed.id === 'string' && session.setConversationId(parsed.id)) {
-          log.info(`conversation set: ${parsed.id}`)
-        } else {
-          log.warn(`ignored invalid set_conversation id=${String(parsed.id)}`)
-        }
       } else if (parsed.type === 'command') {
         if (session.getState() !== 'IDLE') {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
           return
         }
-        send(peer, { type: 'transcript', text: parsed.text })
+        send(peer, { type: 'transcript', id: newTranscriptId(), text: parsed.text })
         log.info('text command:', JSON.stringify(parsed.text))
         processCommand(parsed.text, session, (event) => send(peer, event)).catch((err) => {
           log.fail('processCommand threw:', err)

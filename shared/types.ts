@@ -8,7 +8,7 @@ export type BlockKind = 'tool_call' | 'tool_output' | 'message'
 // WebSocket events: server -> client
 export type ServerEvent =
   | { type: 'state'; state: SessionState }
-  | { type: 'transcript'; text: string }
+  | { type: 'transcript'; id: string; text: string }
   /** Full final assistant text — pushed once at the end of a response, used for exchange history. */
   | { type: 'response'; text: string }
   /** Start of a new Hermes response (one user turn can emit many blocks). */
@@ -35,8 +35,5 @@ export interface TtsModelInfo {
 // WebSocket messages: client -> server (text frames only)
 export type ClientMessage =
   | { type: 'ping' }
-  | { type: 'clear_history' }
   | { type: 'command'; text: string }
   | { type: 'set_voice'; model: string; voice: string }
-  /** Client-controlled Hermes conversation id — persisted in localStorage so the thread survives refresh. */
-  | { type: 'set_conversation'; id: string }

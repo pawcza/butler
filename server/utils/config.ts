@@ -11,6 +11,8 @@ const schema = z.object({
   PIPER_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
   AUTH_USER: z.string().min(1).optional(),
   AUTH_PASS: z.string().min(1).optional(),
+  /** Persistent butler state dir — host-mounted in production (/app/data on Unraid). */
+  DATA_DIR: z.string().min(1).default('./data'),
 })
 
 const result = schema.safeParse(process.env)

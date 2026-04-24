@@ -1,28 +1,25 @@
-import { randomUUID } from 'node:crypto'
 import type { SessionState } from '~/shared/types'
-import { CONVERSATION_ID_PATTERN } from '~/shared/text'
+
+/**
+ * Single Hermes conversation name for every butler request. Hermes's
+ * named-conversation semantics guarantee all turns chain under one session id
+ * (see `/docs/user-guide/features/api-server/#named-conversations`), so every
+ * device talking to butler is continuing the same thread.
+ */
+const BUTLER_CONVERSATION = 'butler'
 
 export class SessionManager {
   private state: SessionState = 'IDLE'
   private readonly onStateChange: (state: SessionState) => void
   private ttsModel: string | null = null
   private ttsVoice: string | null = null
-  /** Stable ID passed to Hermes as `conversation`, so it chains turns and keeps the prompt cache warm. Client can override via `set_conversation` so the thread persists across refresh. */
-  private conversationId: string = `butler-${randomUUID()}`
 
   constructor(onStateChange: (state: SessionState) => void) {
     this.onStateChange = onStateChange
   }
 
   getConversationId(): string {
-    return this.conversationId
-  }
-
-  setConversationId(id: string): boolean {
-    // Accept only well-formed client-supplied ids to avoid injection into Hermes paths.
-    if (!CONVERSATION_ID_PATTERN.test(id)) return false
-    this.conversationId = id
-    return true
+    return BUTLER_CONVERSATION
   }
 
   setTtsPreferences(model: string, voice: string): void {

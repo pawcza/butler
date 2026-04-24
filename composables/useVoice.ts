@@ -1,5 +1,4 @@
 import type { BlockKind, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
-import { CONVERSATION_ID_PATTERN } from '~/shared/text'
 
 /** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest come from Hermes output items. */
 export interface LogItem {
@@ -11,55 +10,11 @@ export interface LogItem {
 }
 
 const STORAGE_KEYS = {
-  chatLog: 'butler-chat-log',
-  conversationId: 'butler-conversation-id',
   ttsModel: 'butler-tts-model',
   ttsVoice: 'butler-tts-voice',
 } as const
-/** Hard cap on bubbles — bounds both localStorage and in-memory reactive cost. */
+/** Hard cap on bubbles — bounds in-memory reactive cost on very long-running sessions. */
 const MAX_LOG_ITEMS = 200
-
-function loadChatLog(): LogItem[] {
-  if (typeof localStorage === 'undefined') return []
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.chatLog)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as LogItem[]
-    // A refresh mid-stream leaves `streaming: true` stuck — clear it so bubbles don't render a caret.
-    return parsed.map((item) => ({ ...item, streaming: false }))
-  } catch {
-    return []
-  }
-}
-
-function saveChatLog(log: readonly LogItem[]): void {
-  if (typeof localStorage === 'undefined') return
-  try {
-    localStorage.setItem(STORAGE_KEYS.chatLog, JSON.stringify(log))
-  } catch {
-    // Quota exceeded or private mode — silently skip; next save will retry.
-  }
-}
-
-function loadOrCreateConversationId(): string {
-  if (typeof localStorage === 'undefined') return `butler-${randomId()}`
-  const existing = localStorage.getItem(STORAGE_KEYS.conversationId)
-  if (existing && CONVERSATION_ID_PATTERN.test(existing)) return existing
-  const fresh = `butler-${randomId()}`
-  localStorage.setItem(STORAGE_KEYS.conversationId, fresh)
-  return fresh
-}
-
-function randomId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-export interface Exchange {
-  heard: string
-  reply: string
-  timestamp: number
-}
 
 /** Convert Silero VAD Float32Array (16kHz mono) to 16-bit PCM WAV ArrayBuffer. */
 function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
@@ -110,7 +65,6 @@ let ws: WebSocket | null = null
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let audioCtx: AudioContext | null = null
-let pendingTranscript = ''
 let isPlayingAudio = false
 /** FIFO queue of audio chunks received from the server while another one is still playing. */
 const audioQueue: Array<{ base64: string; format: 'mp3' | 'wav' }> = []
@@ -124,12 +78,10 @@ let analyserRafId = 0
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
   const isConnected = ref(false)
-  const exchanges = ref<Exchange[]>([])
-  const currentTranscript = ref('')
   const error = ref<string | null>(null)
 
-  // Persistent chat log — hydrated from localStorage so bubbles survive refresh.
-  const chatLog = ref<LogItem[]>(loadChatLog())
+  // Persistent chat log — server-hosted so every device sees the same history.
+  const chatLog = ref<LogItem[]>([])
   const isStreaming = ref(false)
 
   // Passive listening
@@ -176,29 +128,15 @@ export function useVoice() {
 
   function resyncPreferences(): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return
-    // Re-read from localStorage each time so clearHistory's fresh id is picked up on reconnect.
-    ws.send(JSON.stringify({ type: 'set_conversation', id: loadOrCreateConversationId() }))
     if (selectedModel.value && selectedVoice.value) {
       ws.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
     }
-  }
-
-  // Debounced localStorage write — called explicitly after every chatLog mutation to avoid
-  // paying the cost of a deep reactive watcher on every SSE delta.
-  let persistTimer: ReturnType<typeof setTimeout> | null = null
-  function persistSoon(): void {
-    if (persistTimer !== null) clearTimeout(persistTimer)
-    persistTimer = setTimeout(() => {
-      persistTimer = null
-      saveChatLog(chatLog.value)
-    }, 400)
   }
 
   function pushLogItem(item: LogItem): void {
     chatLog.value.push(item)
     const excess = chatLog.value.length - MAX_LOG_ITEMS
     if (excess > 0) chatLog.value.splice(0, excess)
-    persistSoon()
   }
 
   /** Blocks usually arrive / update at the tail of the log, so searching right-to-left is O(1) in practice. */
@@ -243,11 +181,9 @@ export function useVoice() {
         state.value = event.state
         break
       case 'transcript':
-        pendingTranscript = event.text
-        currentTranscript.value = event.text
         audioQueue.length = 0
         pushLogItem({
-          id: `user-${randomId()}`,
+          id: event.id,
           kind: 'user',
           text: event.text,
           streaming: false,
@@ -269,10 +205,7 @@ export function useVoice() {
       }
       case 'block_delta': {
         const item = findBlock(event.blockId)
-        if (item) {
-          item.text += event.text
-          persistSoon()
-        }
+        if (item) item.text += event.text
         break
       }
       case 'block_end': {
@@ -280,7 +213,6 @@ export function useVoice() {
         if (item) {
           item.text = event.text
           item.streaming = false
-          persistSoon()
         }
         break
       }
@@ -288,11 +220,6 @@ export function useVoice() {
         isStreaming.value = false
         break
       case 'response':
-        if (pendingTranscript) {
-          exchanges.value.push({ heard: pendingTranscript, reply: event.text, timestamp: Date.now() })
-          pendingTranscript = ''
-          currentTranscript.value = ''
-        }
         break
       case 'audio':
         void playAudio(event.data, event.format)
@@ -587,18 +514,26 @@ export function useVoice() {
   onMounted(() => {
     connect()
     void fetchVoiceModels()
+    void fetchChatLog()
     if (passiveEnabled.value) void startPassiveListening()
   })
 
   onUnmounted(() => {
     ws?.close()
     stopPassiveListening()
-    if (persistTimer !== null) {
-      clearTimeout(persistTimer)
-      persistTimer = null
-      saveChatLog(chatLog.value)
-    }
   })
+
+  async function fetchChatLog(): Promise<void> {
+    try {
+      const data = await $fetch<{ items: LogItem[] }>('/api/chat-log')
+      // Preserve anything streamed in before the fetch resolves (rare but possible on fast reconnects).
+      const streamedIds = new Set(chatLog.value.map((i) => i.id))
+      const incoming = data.items.filter((i) => !streamedIds.has(i.id))
+      chatLog.value = [...incoming, ...chatLog.value]
+    } catch {
+      // Empty/unreachable → stay with whatever in-memory state we have (usually empty).
+    }
+  }
 
   // ── TTS voice selection ──────────────────────────────────────────────────────
 
@@ -640,27 +575,19 @@ export function useVoice() {
     ws?.send(JSON.stringify({ type: 'ping' }))
   }
 
-  function clearHistory(): void {
-    ws?.send(JSON.stringify({ type: 'clear_history' }))
-    exchanges.value = []
-    chatLog.value = []
-    audioQueue.length = 0
-    currentTranscript.value = ''
-    pendingTranscript = ''
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(STORAGE_KEYS.chatLog)
-      // Mint a fresh conversation id so Hermes treats this as a new thread too.
-      const fresh = `butler-${randomId()}`
-      localStorage.setItem(STORAGE_KEYS.conversationId, fresh)
-      ws?.send(JSON.stringify({ type: 'set_conversation', id: fresh }))
-    }
+  /** Send a typed command through the same pipeline as a voice transcription. */
+  function sendCommand(text: string): boolean {
+    const trimmed = text.trim()
+    if (!trimmed) return false
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false
+    if (state.value !== 'IDLE') return false
+    ws.send(JSON.stringify({ type: 'command', text: trimmed }))
+    return true
   }
 
   return {
     state,
     isConnected,
-    exchanges,
-    currentTranscript,
     error,
     chatLog: readonly(chatLog),
     isStreaming: readonly(isStreaming),
@@ -675,7 +602,7 @@ export function useVoice() {
     stopRecording,
     isInGracePeriod: readonly(isInGracePeriod),
     sendPing,
-    clearHistory,
+    sendCommand,
     setVoice,
   }
 }
