@@ -12,9 +12,18 @@ export interface LogItem {
 const STORAGE_KEYS = {
   ttsModel: 'butler-tts-model',
   ttsVoice: 'butler-tts-voice',
+  volume: 'butler-volume',
 } as const
 /** Hard cap on bubbles — bounds in-memory reactive cost on very long-running sessions. */
 const MAX_LOG_ITEMS = 200
+
+function loadVolume(): number {
+  if (typeof localStorage === 'undefined') return 1
+  const raw = localStorage.getItem(STORAGE_KEYS.volume)
+  if (raw === null) return 1
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 1
+}
 
 /** Convert Silero VAD Float32Array (16kHz mono) to 16-bit PCM WAV ArrayBuffer. */
 function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
@@ -65,14 +74,25 @@ let ws: WebSocket | null = null
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let audioCtx: AudioContext | null = null
+let gainNode: GainNode | null = null
 let isPlayingAudio = false
 /** FIFO queue of audio chunks received from the server while another one is still playing. */
 const audioQueue: Array<{ base64: string; format: 'mp3' | 'wav' }> = []
 let recordingGen = 0
 
-// Module-level audio energy — shared across composable re-invocations
+// Module-level audio state — shared across composable re-invocations
 const audioEnergy = ref(0)
+const volume = ref(loadVolume())
 let analyserRafId = 0
+
+function ensureGain(ctx: AudioContext): GainNode {
+  if (!gainNode || gainNode.context !== ctx) {
+    gainNode = ctx.createGain()
+    gainNode.connect(ctx.destination)
+  }
+  gainNode.gain.value = volume.value
+  return gainNode
+}
 
 
 export function useVoice() {
@@ -277,8 +297,10 @@ export function useVoice() {
 
           const analyser = ctx.createAnalyser()
           analyser.fftSize = 256
+          // source → analyser → gain → destination
+          // Analyser sits before gain so visualizations stay consistent regardless of volume.
           source.connect(analyser)
-          analyser.connect(ctx.destination)
+          analyser.connect(ensureGain(ctx))
 
           const dataArray = new Uint8Array(analyser.frequencyBinCount)
           function updateEnergy() {
@@ -575,6 +597,15 @@ export function useVoice() {
     ws?.send(JSON.stringify({ type: 'ping' }))
   }
 
+  function setVolume(v: number): void {
+    const clamped = Math.max(0, Math.min(1, v))
+    volume.value = clamped
+    if (gainNode) gainNode.gain.value = clamped
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEYS.volume, String(clamped))
+    }
+  }
+
   /** Send a typed command through the same pipeline as a voice transcription. */
   function sendCommand(text: string): boolean {
     const trimmed = text.trim()
@@ -604,5 +635,7 @@ export function useVoice() {
     sendPing,
     sendCommand,
     setVoice,
+    volume: readonly(volume),
+    setVolume,
   }
 }

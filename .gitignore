@@ -4,7 +4,7 @@ dist/
 .output/
 .env
 .env.docker
-data/entities.json
+data/
 *.local
 .DS_Store
 Thumbs.db

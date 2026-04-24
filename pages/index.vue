@@ -15,6 +15,8 @@ const {
   selectedModel,
   selectedVoice,
   setVoice,
+  volume,
+  setVolume,
 } = useVoice()
 
 function onVoiceChange(payload: { model: string; voice: string }): void {
@@ -170,30 +172,39 @@ watch(activeState, async () => {
 
     <!-- UI overlay — fixed on top, 100dvh to respect mobile browser chrome -->
     <div class="fixed inset-0 z-10 flex flex-col h-[100dvh] pointer-events-none overflow-hidden">
-      <!-- Floating branding + voice selector -->
-      <div ref="brandingEl" class="shrink-0 flex items-center gap-3 px-8 pt-6 safe-area-top">
-        <span class="text-3xl font-black tracking-[0.25em] uppercase text-ap-orange drop-shadow-[0_0_20px_rgba(255,102,0,0.4)]">BUTLER</span>
-        <span
-          class="w-2.5 h-2.5 rounded-full shrink-0 transition-colors duration-500"
-          :class="isConnected ? 'bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.8)]' : 'bg-ap-red shadow-[0_0_10px_rgba(239,68,68,0.8)]'"
-        />
-        <!-- Fullscreen toggle -->
-        <button
-          class="ml-auto pointer-events-auto text-white/50 hover:text-white transition-colors duration-200 p-2 min-h-[44px] min-w-[44px] flex items-center justify-center"
-          aria-label="Toggle fullscreen"
-          @click="toggleFullscreen"
-        >
-          <svg v-if="!isFullscreen" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-          <svg v-else xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
-        </button>
-        <!-- Voice selector dropdown -->
-        <div v-if="availableModels.length > 0" class="pointer-events-auto">
+      <!-- Top bar — branding (left) + audio/fullscreen controls (right) -->
+      <div ref="brandingEl" class="shrink-0 flex items-center gap-3 px-4 sm:px-6 pt-5 safe-area-top">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="text-2xl sm:text-3xl font-black tracking-[0.25em] uppercase text-ap-orange drop-shadow-[0_0_20px_rgba(255,102,0,0.4)]">BUTLER</span>
+          <span
+            class="w-2 h-2 rounded-full shrink-0 transition-colors duration-500"
+            :class="isConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.8)]' : 'bg-ap-red shadow-[0_0_8px_rgba(239,68,68,0.8)]'"
+            :aria-label="isConnected ? 'Connected' : 'Disconnected'"
+          />
+        </div>
+
+        <div class="ml-auto flex items-center gap-2 sm:gap-3">
+          <VolumeControl
+            class="hidden sm:flex"
+            :volume="volume"
+            @update:volume="setVolume"
+          />
           <VoiceSelector
+            v-if="availableModels.length > 0"
+            class="pointer-events-auto"
             :models="availableModels"
             :selected-model="selectedModel"
             :selected-voice="selectedVoice"
             @update:voice="onVoiceChange"
           />
+          <button
+            class="pointer-events-auto text-white/50 hover:text-white transition-colors duration-200 p-2 min-h-[36px] min-w-[36px] flex items-center justify-center rounded-full hover:bg-white/5"
+            aria-label="Toggle fullscreen"
+            @click="toggleFullscreen"
+          >
+            <svg v-if="!isFullscreen" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+            <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>
+          </button>
         </div>
       </div>
 

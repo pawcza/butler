@@ -30,13 +30,37 @@ const props = withDefaults(defineProps<{
 })
 
 // ---------- Performance tier (one-time at init) ----------
+/**
+ * Integrated GPUs (MacBook Air, ultrabooks, most Intel/AMD laptops without dedicated cards)
+ * fall off a cliff when asked to run 12k particles × 3 post-FX on Retina at full DPR. We step
+ * down to the same particle/star counts used on mobile-ish devices, cap DPR, and drop the two
+ * heaviest effects. Bloom stays because it's what makes the galaxy look alive.
+ */
+function detectIntegratedGPU(): boolean {
+  if (typeof document === 'undefined') return false
+  try {
+    const canvas = document.createElement('canvas')
+    const gl = (canvas.getContext('webgl2') ?? canvas.getContext('webgl')) as WebGLRenderingContext | null
+    if (!gl) return true
+    const info = gl.getExtension('WEBGL_debug_renderer_info')
+    if (!info) return false
+    const renderer = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)).toLowerCase()
+    return /apple|intel|iris|hd graphics|uhd graphics|radeon vega|vega graphics|\bmali\b|\badreno\b/.test(renderer)
+  } catch {
+    return false
+  }
+}
+
 const isMobile = typeof window !== 'undefined' && (
   window.matchMedia('(pointer: coarse)').matches ||
   window.innerWidth < 768 ||
   window.innerHeight < 768
 )
-const PARTICLE_COUNT = isMobile ? 3000 : 12000
-const STAR_COUNT = isMobile ? 1000 : 4000
+const isIntegrated = !isMobile && detectIntegratedGPU()
+const isHigh = !isMobile && !isIntegrated
+
+const PARTICLE_COUNT = isMobile ? 3000 : isIntegrated ? 7000 : 12000
+const STAR_COUNT = isMobile ? 1000 : isIntegrated ? 2000 : 4000
 const SHAPE_POINT_COUNT = Math.floor(PARTICLE_COUNT * 0.35)
 const GALAXY_RADIUS = 5.5
 
@@ -130,7 +154,8 @@ starGeo.setAttribute('a_brightness', new Float32BufferAttribute(starBrightness, 
 starGeo.setAttribute('a_phase', new Float32BufferAttribute(starPhases, 1))
 
 const rawDpr = typeof window !== 'undefined' ? window.devicePixelRatio : 1
-const dpr = isMobile ? Math.min(rawDpr, 1.5) : rawDpr
+// Retina (DPR 2) on integrated GPUs quadruples fragment shader cost; cap for both tiers.
+const dpr = isMobile || isIntegrated ? Math.min(rawDpr, 1.5) : rawDpr
 const starMat = new ShaderMaterial({
   vertexShader: starsVert,
   fragmentShader: starsFrag,
@@ -298,8 +323,8 @@ onBeforeRender(({ delta }) => {
   <!-- Star field (background) -->
   <TresPoints :geometry="starGeo" :material="starMat" />
 
-  <!-- Nebula fog (mid-ground, behind particles) — skip on mobile (expensive simplex noise) -->
-  <TresMesh v-if="!isMobile" :geometry="nebulaGeo" :material="nebulaMat" :render-order="-1" />
+  <!-- Nebula fog — high tier only; simplex noise is expensive per-pixel -->
+  <TresMesh v-if="isHigh" :geometry="nebulaGeo" :material="nebulaMat" :render-order="-1" />
 
   <!-- Main particle system -->
   <TresPoints :geometry="particleGeo" :material="particleMat" />
@@ -313,11 +338,13 @@ onBeforeRender(({ delta }) => {
         :mipmap-blur="true"
       />
       <ChromaticAberrationPmndrs
+        v-if="isHigh"
         :offset="chromaticOffset"
         :radial-modulation="true"
         :modulation-offset="0.3"
       />
       <HeatHazePmndrs
+        v-if="isHigh"
         :intensity="hazeIntensity"
         :time="hazeTime"
       />
