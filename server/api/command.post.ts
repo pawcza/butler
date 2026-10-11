@@ -3,6 +3,8 @@ import type { ServerEvent } from '~/shared/types'
 
 const bodySchema = z.object({
   text: z.string().min(1, 'text must not be empty'),
+  /** Continue this thread; without it the command opens a fresh one. */
+  conversationId: z.string().uuid().optional(),
 })
 
 export default defineEventHandler(async (event) => {
@@ -14,6 +16,7 @@ export default defineEventHandler(async (event) => {
 
   const events: ServerEvent[] = []
   const session = new SessionManager(() => {})
+  if (parsed.data.conversationId) session.setConversationId(parsed.data.conversationId)
   await processCommand(parsed.data.text, session, (e) => events.push(e))
   return { events }
 })

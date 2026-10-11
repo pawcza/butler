@@ -29,6 +29,7 @@ Single Nuxt 3 project. Nitro handles backend (REST + WebSocket). Vue handles fro
 
 ## Key architectural rules
 
+- Conversations live in conversation-api (`/v1/conversations`, `server/utils/conversations.ts`). Every session starts clean; the first message opens a thread, `?c=<id>` reopens one. The thread id is also the Hermes conversation name (`butler-<id>`), so a new thread is a clean Hermes context.
 - Nitro auto-imports everything in `server/utils/` — no import statements needed between server files
 - `server/utils/config.ts` validates env vars with Zod at module load time; exits process on failure
 - HA tool discovery and execution goes through ha-mcp MCP server — butler-core is an MCP client
@@ -52,10 +53,10 @@ All read from process.env by `server/utils/config.ts`. Nuxt loads `.env` automat
 
 | Var | Default | Purpose |
 |-----|---------|---------|
-| `HA_URL` | — | Home Assistant base URL |
-| `HA_TOKEN` | — | HA long-lived access token |
-| `OLLAMA_URL` | — | Ollama base URL |
-| `OLLAMA_MODEL` | `qwen3.5:9b` | LLM model |
+| `HERMES_API_URL` | `http://hermes-agent:8642/v1` | Hermes agent (does the LLM, tools, HA) |
+| `HERMES_API_KEY` | — | Hermes API server key |
+| `PERSONA_API_URL` | `http://conversation-api:3001/v1` | conversation-api home-app door — conversation threads live there |
+| `PERSONA_API_KEY` | — | butler's key from conversation-api `LLM_PROXY_KEYS` |
 | `WHISPER_URL` | — | Whisper API URL (STT, model configured in Docker) |
 | `PIPER_URL` | — | Speaches URL (TTS) |
 | `PIPER_MODEL` | `speaches-ai/Kokoro-82M-v1.0-ONNX` | TTS model |

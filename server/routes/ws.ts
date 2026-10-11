@@ -3,9 +3,7 @@ import type { ClientMessage, ServerEvent } from '~/shared/types'
 const log = createLog('ws')
 const sessions = new Map<string, SessionManager>()
 
-/** Persist every emitted event to the server-side chat log, then forward to the peer. */
 function send(peer: { send: (data: string) => void }, event: ServerEvent): void {
-  recordEvent(event)
   peer.send(JSON.stringify(event))
 }
 
@@ -56,6 +54,13 @@ export default defineWebSocketHandler({
         } else {
           log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
         }
+      } else if (parsed.type === 'set_conversation') {
+        if (session.getState() !== 'IDLE') {
+          send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
+          return
+        }
+        session.setConversationId(typeof parsed.id === 'string' && parsed.id ? parsed.id : null)
+        log.info(`conversation: ${session.getConversationId() ?? 'new'}`)
       } else if (parsed.type === 'command') {
         if (session.getState() !== 'IDLE') {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })

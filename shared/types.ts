@@ -5,6 +5,34 @@ export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SP
 /** A block is one item in Hermes's /v1/responses output: a tool call, a tool result, or a final assistant message. */
 export type BlockKind = 'tool_call' | 'tool_output' | 'message'
 
+/** A conversation thread as conversation-api keeps it. */
+export interface ConversationSummary {
+  id: string
+  title: string | null
+  messageCount: number
+  createdAt: string
+  lastMessageAt: string
+}
+
+export interface ConversationPage {
+  items: ConversationSummary[]
+  hasMore: boolean
+}
+
+/** One stored turn — what was said and what butler answered. Tool calls are only shown live. */
+export interface StoredMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  status: string
+  createdAt: string
+}
+
+export interface ConversationThread {
+  conversation: ConversationSummary
+  items: StoredMessage[]
+}
+
 // WebSocket events: server -> client
 export type ServerEvent =
   | { type: 'state'; state: SessionState }
@@ -25,6 +53,8 @@ export type ServerEvent =
   | { type: 'audio'; data: string; format: 'mp3' | 'wav' }
   | { type: 'error'; message: string }
   | { type: 'pong' }
+  /** A fresh thread was opened for this session's first message. */
+  | { type: 'conversation'; conversation: ConversationSummary }
 
 // TTS model info returned by /api/tts/voices
 export interface TtsModelInfo {
@@ -37,3 +67,5 @@ export type ClientMessage =
   | { type: 'ping' }
   | { type: 'command'; text: string }
   | { type: 'set_voice'; model: string; voice: string }
+  /** Continue an existing thread, or `null` to start clean (the default for every new session). */
+  | { type: 'set_conversation'; id: string | null }

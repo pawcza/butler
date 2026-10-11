@@ -6,6 +6,10 @@ const {
   isConnected,
   error,
   chatLog,
+  conversationId,
+  newConversation,
+  openConversation,
+  forgetConversation,
   sendCommand,
   startRecording,
   stopRecording,
@@ -184,6 +188,14 @@ watch(activeState, async () => {
         </div>
 
         <div class="ml-auto flex items-center gap-2 sm:gap-3">
+          <ConversationList
+            class="pointer-events-auto"
+            :active-id="conversationId"
+            :disabled="!canInteract"
+            @open="openConversation"
+            @new="newConversation"
+            @deleted="forgetConversation"
+          />
           <VolumeControl
             class="hidden sm:flex"
             :volume="volume"
@@ -235,8 +247,8 @@ watch(activeState, async () => {
       </div>
     </div>
 
-    <!-- Persistent chat log — accumulates transcripts + Hermes output blocks across the session.
-         ClientOnly: rehydrated from localStorage, so SSR would mismatch. -->
+    <!-- The open conversation — transcripts + Hermes output blocks; a stored thread loads from
+         conversation-api. ClientOnly: built from the URL and the WebSocket, so SSR would mismatch. -->
     <ClientOnly>
       <ChatLog
         :log="chatLog"

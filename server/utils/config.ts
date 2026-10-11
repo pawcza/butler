@@ -4,6 +4,10 @@ const schema = z.object({
   HERMES_API_URL: z.string().url('HERMES_API_URL must be a valid URL').default('http://hermes-agent:8642/v1'),
   HERMES_API_KEY: z.string().min(1, 'HERMES_API_KEY is required'),
   HERMES_MODEL: z.string().min(1).default('claude-sonnet-4-6'),
+  /** conversation-api's home-app door: conversation threads live there (`/conversations`). */
+  PERSONA_API_URL: z.string().url('PERSONA_API_URL must be a valid URL').default('http://conversation-api:3001/v1'),
+  /** butler's key from conversation-api's LLM_PROXY_KEYS. */
+  PERSONA_API_KEY: z.string().min(1, 'PERSONA_API_KEY is required'),
   WHISPER_URL: z.string().url('WHISPER_URL must be a valid URL'),
   PIPER_URL: z.string().url('PIPER_URL must be a valid URL'),
   PIPER_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
@@ -11,8 +15,6 @@ const schema = z.object({
   PIPER_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
   AUTH_USER: z.string().min(1).optional(),
   AUTH_PASS: z.string().min(1).optional(),
-  /** Persistent butler state dir — host-mounted in production (/app/data on Unraid). */
-  DATA_DIR: z.string().min(1).default('./data'),
 })
 
 const result = schema.safeParse(process.env)

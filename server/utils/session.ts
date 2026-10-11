@@ -1,25 +1,23 @@
 import type { SessionState } from '~/shared/types'
 
-/**
- * Single Hermes conversation name for every butler request. Hermes's
- * named-conversation semantics guarantee all turns chain under one session id
- * (see `/docs/user-guide/features/api-server/#named-conversations`), so every
- * device talking to butler is continuing the same thread.
- */
-const BUTLER_CONVERSATION = 'butler'
-
 export class SessionManager {
   private state: SessionState = 'IDLE'
   private readonly onStateChange: (state: SessionState) => void
   private ttsModel: string | null = null
   private ttsVoice: string | null = null
+  /** conversation-api thread id; null until the first message opens one — every session starts clean. */
+  private conversationId: string | null = null
 
   constructor(onStateChange: (state: SessionState) => void) {
     this.onStateChange = onStateChange
   }
 
-  getConversationId(): string {
-    return BUTLER_CONVERSATION
+  getConversationId(): string | null {
+    return this.conversationId
+  }
+
+  setConversationId(id: string | null): void {
+    this.conversationId = id
   }
 
   setTtsPreferences(model: string, voice: string): void {

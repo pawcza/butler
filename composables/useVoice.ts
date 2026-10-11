@@ -1,4 +1,4 @@
-import type { BlockKind, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
+import type { BlockKind, ConversationThread, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
 
 /** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest come from Hermes output items. */
 export interface LogItem {
@@ -100,8 +100,10 @@ export function useVoice() {
   const isConnected = ref(false)
   const error = ref<string | null>(null)
 
-  // Persistent chat log — server-hosted so every device sees the same history.
+  // The open thread's bubbles. Every visit starts with a clean one; `?c=<id>` reopens a stored thread.
   const chatLog = ref<LogItem[]>([])
+  /** conversation-api thread id; null until the first message of a fresh conversation opens one. */
+  const conversationId = ref<string | null>(null)
   const isStreaming = ref(false)
 
   // Passive listening
@@ -179,6 +181,8 @@ export function useVoice() {
     ws.onopen = () => {
       isConnected.value = true
       resyncPreferences()
+      // the server's session is per connection: tell a fresh one which thread we're in
+      syncConversation()
     }
     ws.onclose = () => { isConnected.value = false }
     ws.onerror = () => { error.value = 'WebSocket connection failed' }
@@ -240,6 +244,10 @@ export function useVoice() {
         isStreaming.value = false
         break
       case 'response':
+        break
+      case 'conversation':
+        conversationId.value = event.conversation.id
+        setUrlConversation(event.conversation.id)
         break
       case 'audio':
         void playAudio(event.data, event.format)
@@ -536,7 +544,8 @@ export function useVoice() {
   onMounted(() => {
     connect()
     void fetchVoiceModels()
-    void fetchChatLog()
+    const reopen = new URL(window.location.href).searchParams.get('c')
+    if (reopen) void openConversation(reopen)
     if (passiveEnabled.value) void startPassiveListening()
   })
 
@@ -545,16 +554,54 @@ export function useVoice() {
     stopPassiveListening()
   })
 
-  async function fetchChatLog(): Promise<void> {
+  // ── Conversations ────────────────────────────────────────────────────────────
+
+  function syncConversation(): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(JSON.stringify({ type: 'set_conversation', id: conversationId.value }))
+  }
+
+  function setUrlConversation(id: string | null): void {
+    const url = new URL(window.location.href)
+    if (id) url.searchParams.set('c', id)
+    else url.searchParams.delete('c')
+    window.history.replaceState(window.history.state, '', url)
+  }
+
+  /** Start clean: the next message opens a new thread. */
+  function newConversation(): boolean {
+    if (state.value !== 'IDLE') return false
+    chatLog.value = []
+    conversationId.value = null
+    setUrlConversation(null)
+    syncConversation()
+    return true
+  }
+
+  /** Reopen a stored thread and continue it. A thread that's gone falls back to a clean one. */
+  async function openConversation(id: string): Promise<boolean> {
+    if (state.value !== 'IDLE') return false
     try {
-      const data = await $fetch<{ items: LogItem[] }>('/api/chat-log')
-      // Preserve anything streamed in before the fetch resolves (rare but possible on fast reconnects).
-      const streamedIds = new Set(chatLog.value.map((i) => i.id))
-      const incoming = data.items.filter((i) => !streamedIds.has(i.id))
-      chatLog.value = [...incoming, ...chatLog.value]
+      const thread = await $fetch<ConversationThread>(`/api/conversations/${encodeURIComponent(id)}`)
+      chatLog.value = thread.items.map((m) => ({
+        id: m.id,
+        kind: m.role === 'user' ? 'user' : 'message',
+        text: m.content,
+        streaming: false,
+      }))
+      conversationId.value = thread.conversation.id
+      setUrlConversation(thread.conversation.id)
+      syncConversation()
+      return true
     } catch {
-      // Empty/unreachable → stay with whatever in-memory state we have (usually empty).
+      newConversation()
+      return false
     }
+  }
+
+  /** The open thread was deleted elsewhere in the UI: drop back to a clean one. */
+  function forgetConversation(id: string): void {
+    if (conversationId.value === id) newConversation()
   }
 
   // ── TTS voice selection ──────────────────────────────────────────────────────
@@ -621,6 +668,10 @@ export function useVoice() {
     isConnected,
     error,
     chatLog: readonly(chatLog),
+    conversationId: readonly(conversationId),
+    newConversation,
+    openConversation,
+    forgetConversation,
     isStreaming: readonly(isStreaming),
     passiveEnabled,
     isPassive,

@@ -100,6 +100,30 @@ export async function processCommand(
 
   log.info(`▶ "${text}"`)
 
+  // A session starts without a thread; its first message opens one. The thread id doubles as
+  // Hermes's conversation name, so a new thread is a clean context there too.
+  let conversationId = session.getConversationId()
+  if (!conversationId) {
+    try {
+      const conversation = await conversationStore.create()
+      conversationId = conversation.id
+      session.setConversationId(conversationId)
+      emit({ type: 'conversation', conversation })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      log.fail(`could not open a conversation: ${msg}`)
+      emit({ type: 'error', message: `Conversation store unreachable: ${msg}` })
+      session.setState('IDLE')
+      return
+    }
+  }
+  const threadId = conversationId
+  const keep = (role: 'user' | 'assistant', content: string) =>
+    conversationStore.append(threadId, role, content).catch((err: unknown) => {
+      log.warn(`failed to store ${role} turn: ${err instanceof Error ? err.message : err}`)
+    })
+  const userKept = keep('user', text.trim())
+
   emit({ type: 'response_start' })
 
   // Serialize TTS so audio events emit in order even though multiple chunks may synthesize
@@ -109,7 +133,7 @@ export async function processCommand(
 
   let finalMessage: string
   try {
-    const result = await respond(text, session.getConversationId(), {
+    const result = await respond(text, `butler-${threadId}`, {
       onBlockStart: (blockId, kind, meta) => {
         const evt: ServerEvent = { type: 'block_start', blockId, kind }
         if (meta.tool !== undefined) evt.tool = meta.tool
@@ -146,6 +170,8 @@ export async function processCommand(
 
   emit({ type: 'response_end', text: finalMessage })
   emit({ type: 'response', text: finalMessage })
+  // after the user's line, so the thread reads in order
+  void userKept.then(() => keep('assistant', finalMessage))
 
   log.info(`+${lap()}ms LLM done (chunks=${spokenCount}, ${finalMessage.length}ch total)`)
 
