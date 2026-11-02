@@ -117,6 +117,11 @@ Ollama has no speech endpoints. For voice, run [Speaches](https://github.com/spe
 pnpm dev
 ```
 
+**Pick a model that handles tools well.** With MCP servers connected, every model sees the tool list, and some
+do worse for it. In testing, `llama3.1:8b` called a tool correctly when asked, but answered a plain general
+question by talking about its tools. If replies wander, try a stronger model or run without `MCP_SERVERS`. The
+first reply after a model loads also takes several seconds, then it speeds up.
+
 ### With OpenAI or a compatible provider
 
 ```bash
