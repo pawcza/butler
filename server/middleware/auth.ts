@@ -8,7 +8,7 @@ export default defineEventHandler((event) => {
 
   const header = getRequestHeader(event, 'authorization')
   if (!header?.startsWith('Basic ')) {
-    setResponseHeader(event, 'www-authenticate', 'Basic realm="butler-core"')
+    setResponseHeader(event, 'www-authenticate', 'Basic realm="butler"')
     throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
   }
 
@@ -18,7 +18,7 @@ export default defineEventHandler((event) => {
   const reqPass = decoded.slice(sep + 1)
 
   if (reqUser !== user || reqPass !== pass) {
-    setResponseHeader(event, 'www-authenticate', 'Basic realm="butler-core"')
+    setResponseHeader(event, 'www-authenticate', 'Basic realm="butler"')
     throw createError({ statusCode: 401, statusMessage: 'Unauthorized' })
   }
 })

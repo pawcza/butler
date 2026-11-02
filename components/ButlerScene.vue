@@ -224,7 +224,6 @@ const ORBIT_SPEED_MAP: Record<string, number> = {
   LISTENING: 0.04,
   THINKING: 0.05,
   SPEAKING: 0.04,
-  GRACE: 0.03,
 }
 let orbitAngle = 0
 let orbitSpeed = 0.005

@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
+import type { Ref } from 'vue'
 
 // useAvatarState expects a Ref<string> — we mock it as a plain object with .value
 // (the composable only reads .value, so this is sufficient for testing)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeRef(initial: string): any {
-  return { value: initial }
+function makeRef(initial: string): Ref<string> {
+  return { value: initial } as Ref<string>
 }
 
 const { useAvatarState, SPEAKING_SHAPES } = await import('../composables/useAvatarState')
@@ -108,24 +108,4 @@ describe('useAvatarState', () => {
     expect(result.shapeChanged).toBe('ring')
   })
 
-  it('GRACE state has orange color and ring shape', () => {
-    const state = makeRef('GRACE')
-    const { current } = useAvatarState(state)
-    // AP_ORANGE = { r: 1.0, g: 0.4, b: 0.0 }
-    expect(current.primaryR).toBe(1.0)
-    expect(current.primaryG).toBe(0.4)
-    expect(current.primaryB).toBe(0.0)
-    // Same condense as IDLE (ring shape)
-    expect(current.condense).toBe(0.7)
-  })
-
-  it('SPEAKING → GRACE transitions shape to ring', () => {
-    const state = makeRef('SPEAKING')
-    const { update } = useAvatarState(state)
-    update(1 / 60) // pick a speaking shape
-
-    state.value = 'GRACE'
-    const result = update(1 / 60)
-    expect(result.shapeChanged).toBe('ring')
-  })
 })

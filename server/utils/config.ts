@@ -1,23 +1,34 @@
 import { z } from 'zod'
+import { createLog } from './log'
+
+const baseUrl = (name: string) =>
+  z.string().url(`${name} must be a valid URL`).transform((url) => url.replace(/\/+$/, ''))
 
 const schema = z.object({
-  HERMES_API_URL: z.string().url('HERMES_API_URL must be a valid URL').default('http://hermes-agent:8642/v1'),
-  HERMES_API_KEY: z.string().min(1, 'HERMES_API_KEY is required'),
-  HERMES_MODEL: z.string().min(1).default('claude-sonnet-4-6'),
-  /** conversation-api's home-app door: conversation threads live there (`/conversations`). */
-  PERSONA_API_URL: z.string().url('PERSONA_API_URL must be a valid URL').default('http://conversation-api:3001/v1'),
-  /** butler's key from conversation-api's LLM_PROXY_KEYS. */
-  PERSONA_API_KEY: z.string().min(1, 'PERSONA_API_KEY is required'),
-  WHISPER_URL: z.string().url('WHISPER_URL must be a valid URL'),
-  PIPER_URL: z.string().url('PIPER_URL must be a valid URL'),
-  PIPER_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
-  PIPER_VOICE: z.string().min(1).default('af_heart'),
-  PIPER_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
+  LLM_BASE_URL: baseUrl('LLM_BASE_URL').default('http://localhost:11434/v1'),
+  LLM_API_KEY: z.string().optional(),
+  LLM_MODEL: z.string({ required_error: 'LLM_MODEL is required' }).min(1),
+  LLM_SYSTEM_PROMPT: z.string().optional(),
+  LLM_MAX_TOOL_ITERATIONS: z.coerce.number().int().min(1).default(8),
+  STT_BASE_URL: baseUrl('STT_BASE_URL').optional(),
+  STT_API_KEY: z.string().optional(),
+  STT_MODEL: z.string().min(1).default('whisper-1'),
+  TTS_BASE_URL: baseUrl('TTS_BASE_URL').optional(),
+  TTS_API_KEY: z.string().optional(),
+  TTS_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
+  TTS_VOICE: z.string().min(1).default('af_heart'),
+  TTS_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
+  /** Inline JSON, or a path to a JSON file. See the MCP section of the README. */
+  MCP_SERVERS: z.string().optional(),
+  DATA_DIR: z.string().min(1).default('./data'),
+  WAKE_WORD: z.string().min(1).default('butler'),
   AUTH_USER: z.string().min(1).optional(),
   AUTH_PASS: z.string().min(1).optional(),
 })
 
-const result = schema.safeParse(process.env)
+// `FOO=` in an env file means unset, not an empty value.
+const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== ''))
+const result = schema.safeParse(env)
 
 if (!result.success) {
   const log = createLog('config')

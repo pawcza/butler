@@ -1,3 +1,5 @@
+import { matchWakeWord } from '~/shared/text'
+
 export default defineEventHandler(async (event) => {
   const form = await readFormData(event)
   const file = form.get('audio')
@@ -15,5 +17,5 @@ export default defineEventHandler(async (event) => {
       message: err instanceof Error ? err.message : 'STT service unavailable',
     })
   }
-  return { heard }
+  return { heard, command: matchWakeWord(heard, config.WAKE_WORD) }
 })

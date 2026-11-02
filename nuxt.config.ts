@@ -1,10 +1,10 @@
 export default defineNuxtConfig({
-  devServer: { port: 3001 },
   devtools: { enabled: true },
   modules: ['@nuxtjs/tailwindcss', '@tresjs/nuxt'],
   experimental: { appManifest: false },
   app: {
     head: {
+      title: 'Butler',
       meta: [
         { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
       ],

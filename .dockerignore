@@ -1,0 +1,14 @@
+node_modules
+.nuxt
+.output
+.git
+.github
+.claude
+.env
+.env.*
+!.env.example
+data
+docs
+tests
+mcp.json
+*.md

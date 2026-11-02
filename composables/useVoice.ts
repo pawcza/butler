@@ -1,6 +1,8 @@
+import type { MicVAD } from '@ricky0123/vad-web'
 import type { BlockKind, ConversationThread, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
+import { float32ToWav } from '~/utils/wav'
 
-/** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest come from Hermes output items. */
+/** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest are response blocks. */
 export interface LogItem {
   id: string
   kind: 'user' | BlockKind
@@ -25,46 +27,10 @@ function loadVolume(): number {
   return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : 1
 }
 
-/** Convert Silero VAD Float32Array (16kHz mono) to 16-bit PCM WAV ArrayBuffer. */
-function float32ToWav(samples: Float32Array, sampleRate = 16000): ArrayBuffer {
-  const numChannels = 1
-  const bitsPerSample = 16
-  const dataSize = samples.length * 2
-  const buffer = new ArrayBuffer(44 + dataSize)
-  const view = new DataView(buffer)
-
-  function writeStr(offset: number, str: string): void {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
-  }
-
-  writeStr(0, 'RIFF')
-  view.setUint32(4, 36 + dataSize, true)
-  writeStr(8, 'WAVE')
-  writeStr(12, 'fmt ')
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)                                               // PCM
-  view.setUint16(22, numChannels, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, (sampleRate * numChannels * bitsPerSample) / 8, true) // byte rate
-  view.setUint16(32, (numChannels * bitsPerSample) / 8, true)              // block align
-  view.setUint16(34, bitsPerSample, true)
-  writeStr(36, 'data')
-  view.setUint32(40, dataSize, true)
-
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i] ?? 0))
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true)
-  }
-
-  return buffer
-}
-
 // ── Module-level singletons — survive HMR / composable re-invocations ────────
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let vad: any = null
+let vad: MicVAD | null = null
 let vadStarting = false
-let vadPhase: 'passive' | 'active' | 'grace' = 'passive'
-let graceTimer: ReturnType<typeof setTimeout> | null = null
+let vadPhase: 'passive' | 'active' = 'passive'
 let wakeCheckInFlight = false
 let minWindowElapsed = false
 let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
@@ -76,6 +42,8 @@ let audioChunks: Blob[] = []
 let audioCtx: AudioContext | null = null
 let gainNode: GainNode | null = null
 let isPlayingAudio = false
+/** Last state the server reported. Playback can end while a tool loop is still running. */
+let serverState: SessionState = 'IDLE'
 /** FIFO queue of audio chunks received from the server while another one is still playing. */
 const audioQueue: Array<{ base64: string; format: 'mp3' | 'wav' }> = []
 let recordingGen = 0
@@ -102,16 +70,13 @@ export function useVoice() {
 
   // The open thread's bubbles. Every visit starts with a clean one; `?c=<id>` reopens a stored thread.
   const chatLog = ref<LogItem[]>([])
-  /** conversation-api thread id; null until the first message of a fresh conversation opens one. */
+  /** Thread id; null until the first message of a fresh conversation opens one. */
   const conversationId = ref<string | null>(null)
   const isStreaming = ref(false)
 
   // Passive listening
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
-
-  // Grace period — conversational follow-up window after assistant speaks
-  const isInGracePeriod = ref(false)
 
   // True between wake word detection and first server state event — masks STT latency
   const isProcessingWake = ref(false)
@@ -124,27 +89,6 @@ export function useVoice() {
   const selectedVoice = ref(
     (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEYS.ttsVoice)) || '',
   )
-
-  function startGracePeriod(): void {
-    if (!vad || !isPassive.value) return
-    cancelGracePeriod()
-    vadPhase = 'grace'
-    isInGracePeriod.value = true
-    graceTimer = setTimeout(() => {
-      graceTimer = null
-      vadPhase = 'passive'
-      isInGracePeriod.value = false
-    }, 10_000)
-  }
-
-  function cancelGracePeriod(): void {
-    if (graceTimer !== null) {
-      clearTimeout(graceTimer)
-      graceTimer = null
-    }
-    if (vadPhase === 'grace') vadPhase = 'passive'
-    isInGracePeriod.value = false
-  }
 
   // ── Preference re-sync ──────────────────────────────────────────────────────
 
@@ -200,6 +144,7 @@ export function useVoice() {
     switch (event.type) {
       case 'state':
         isProcessingWake.value = false
+        serverState = event.state
         // Don't go IDLE while audio is still playing — stay in SPEAKING
         if (event.state === 'IDLE' && isPlayingAudio) break
         state.value = event.state
@@ -287,7 +232,7 @@ export function useVoice() {
     cancelAnimationFrame(analyserRafId)
     audioEnergy.value = 0
     isPlayingAudio = false
-    state.value = 'IDLE'
+    state.value = serverState
   }
 
   function playOne(base64: string): Promise<void> {
@@ -333,17 +278,14 @@ export function useVoice() {
   }
 
   function playAckSound(): void {
-    console.log('[vad] playing ack sound')
-    new Audio('/ack-sound.mp3').play().catch((err) => {
-      console.warn('[vad] ack sound blocked:', err)
-    })
+    // Autoplay policy can block this before the first user gesture; the sound is optional.
+    new Audio('/ack-sound.mp3').play().catch(() => {})
   }
 
   // ── Manual recording ─────────────────────────────────────────────────────────
 
   async function startRecording(silent = false): Promise<void> {
     if (mediaRecorder?.state === 'recording') return
-    cancelGracePeriod()
     if (!silent) {
       playAckSound()
       if (vad) vad.pause()
@@ -391,7 +333,6 @@ export function useVoice() {
   // ── Passive VAD + wake word ───────────────────────────────────────────────────
 
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
-    console.log('[vad] onSpeechEnd fired — phase:', vadPhase, '| samples:', audio.length, '| inFlight:', wakeCheckInFlight, '| state:', state.value)
     if (vadPhase === 'passive') {
       if (wakeCheckInFlight || state.value !== 'IDLE') return
       wakeCheckInFlight = true
@@ -400,12 +341,6 @@ export function useVoice() {
       } finally {
         wakeCheckInFlight = false
       }
-    } else if (vadPhase === 'grace') {
-      // Grace period follow-up — send audio directly, skip wake word
-      cancelGracePeriod()
-      const wav = float32ToWav(audio)
-      ws?.send(wav)
-      isProcessingWake.value = true
     } else if (vadPhase === 'active' && minWindowElapsed) {
       triggerActiveStop()
     }
@@ -418,41 +353,29 @@ export function useVoice() {
     form.append('audio', blob, 'wake.wav')
 
     try {
-      console.log('[vad] posting to /api/wakeword — blob size:', blob.size)
-      const result = await $fetch<{ heard: string }>('/api/wakeword', {
+      const { command } = await $fetch<{ command: string | null }>('/api/wakeword', {
         method: 'POST',
         body: form,
       })
-      console.log('[vad] heard:', JSON.stringify(result.heard))
-
-      const lower = result.heard.toLowerCase()
-      const wakeIdx = lower.indexOf('home')
-      if (wakeIdx === -1) return
-
-      // Extract everything after the wake word, stripping leading punctuation/spaces
-      const commandText = result.heard.slice(wakeIdx + 'home'.length).replace(/^[,.\s!?]+/, '').trim()
-      console.log('[vad] command text:', JSON.stringify(commandText))
+      if (command === null) return
 
       playAckSound()
       isProcessingWake.value = true
 
-      if (commandText.length > 2) {
+      if (command.length > 2) {
         // Alexa-style: command is in the same utterance — send directly to pipeline
-        const payload = JSON.stringify({ type: 'command', text: commandText })
-        console.log('[vad] sending WS command, readyState:', ws?.readyState, 'payload:', payload)
-        ws?.send(payload)
+        ws?.send(JSON.stringify({ type: 'command', text: command }))
       } else {
         // Bare wake word — open active listening window
         await triggerActiveStart()
       }
-    } catch (err) {
+    } catch {
+      // Passive listening keeps going; the next utterance gets a fresh attempt.
       isProcessingWake.value = false
-      console.warn('[vad] wakeword check failed:', err)
     }
   }
 
   async function triggerActiveStart(): Promise<void> {
-    console.log('[vad] wake word matched — starting active listening')
     vadPhase = 'active'
     minWindowElapsed = false
 
@@ -497,22 +420,13 @@ export function useVoice() {
         onnxWASMBasePath: '/_vad/',
         model: 'v5',
         minSpeechMs: 30,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ortConfig: (ort: any) => { ort.env.wasm.numThreads = 1 },
-        onSpeechStart: () => {
-          // Reset grace timer — user is speaking, give them a fresh 10s after they finish
-          if (vadPhase === 'grace' && graceTimer !== null) {
-            clearTimeout(graceTimer)
-            graceTimer = null
-          }
-        },
+        ortConfig: (ort) => { ort.env.wasm.numThreads = 1 },
         onSpeechEnd: (audio: Float32Array) => {
           void handleSpeechEnd(audio)
         },
       })
       await vad.start()
       isPassive.value = true
-      console.log('[vad] passive listening started')
     } catch (err) {
       error.value = `Passive listening unavailable: ${err instanceof Error ? err.message : err}`
       setTimeout(() => { error.value = null }, 5000)
@@ -541,12 +455,13 @@ export function useVoice() {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-  onMounted(() => {
+  onMounted(async () => {
     connect()
-    void fetchVoiceModels()
     const reopen = new URL(window.location.href).searchParams.get('c')
     if (reopen) void openConversation(reopen)
-    if (passiveEnabled.value) void startPassiveListening()
+    const speechRecognition = await fetchVoiceModels()
+    // Without speech recognition there is nothing to do with the mic, so don't ask for it.
+    if (passiveEnabled.value && speechRecognition) void startPassiveListening()
   })
 
   onUnmounted(() => {
@@ -606,9 +521,14 @@ export function useVoice() {
 
   // ── TTS voice selection ──────────────────────────────────────────────────────
 
-  async function fetchVoiceModels(): Promise<void> {
+  /** Resolves to whether the server has speech recognition configured. */
+  async function fetchVoiceModels(): Promise<boolean> {
     try {
-      const data = await $fetch<{ models: TtsModelInfo[]; defaults: { model: string; voice: string } }>('/api/tts/voices')
+      const data = await $fetch<{
+        models: TtsModelInfo[]
+        defaults: { model: string; voice: string }
+        stt: boolean
+      }>('/api/tts/voices')
       availableModels.value = data.models
 
       // Init from localStorage or server defaults
@@ -625,8 +545,10 @@ export function useVoice() {
       // Re-send preferences now that voice refs are populated — covers the
       // race where ws.onopen fired before this fetch resolved.
       resyncPreferences()
+      return data.stt
     } catch {
       // Non-critical — voice selector just stays empty
+      return true
     }
   }
 
@@ -682,7 +604,6 @@ export function useVoice() {
     selectedVoice: readonly(selectedVoice),
     startRecording,
     stopRecording,
-    isInGracePeriod: readonly(isInGracePeriod),
     sendPing,
     sendCommand,
     setVoice,

@@ -2,10 +2,14 @@ node_modules/
 dist/
 .nuxt/
 .output/
-.env
-.env.docker
 data/
+.claude/
+.env
+.env.*
+!.env.example
+mcp.json
+docker-compose.override.yml
 *.local
+*.log
 .DS_Store
 Thumbs.db
-*.log

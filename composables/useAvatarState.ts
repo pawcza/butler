@@ -1,6 +1,6 @@
 import type { ShapeName } from '~/utils/shapes'
 
-type DisplayState = 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING' | 'GRACE'
+type DisplayState = 'IDLE' | 'LISTENING' | 'THINKING' | 'SPEAKING'
 
 interface RGB { r: number; g: number; b: number }
 
@@ -61,7 +61,6 @@ const STATE_OVERRIDES: Record<DisplayState, Partial<StateOverride>> = {
   LISTENING: { color: AP_BLUE, shape: 'triangle', condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.006, distortionIntensity: 0.003 },
   THINKING: { color: AP_AMBER, shape: 'cube', condense: 1, flowSpeed: 0.15, wobbleAmount: 0.015, particleBrightness: 0.35, bloomIntensity: 0.15, spinSpeed: 1.2, chromaticIntensity: 0.012, distortionIntensity: 0.008 },
   SPEAKING: { color: AP_ORANGE, condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.008, distortionIntensity: 0.005 },
-  GRACE: { color: AP_ORANGE, shape: 'ring', condense: 0.7, flowSpeed: 0.04, particleBrightness: 0.25, wobbleAmount: 0.025, chromaticIntensity: 0.003 },
 }
 
 /** Pool of shapes used for SPEAKING — a random one is picked each time, never the same twice. */

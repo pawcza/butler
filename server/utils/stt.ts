@@ -1,9 +1,9 @@
 const log = createLog('stt')
 
-/** Send a tiny silent WAV to Speaches so it loads the Whisper model eagerly. */
+/** Send a tiny silent WAV so a self-hosted server loads its model before the first real request. */
 export async function warmUpStt(): Promise<void> {
   const t0 = Date.now()
-  log.info('warming up Whisper model...')
+  log.info('warming up...')
   // 0.1s of silence at 16kHz mono 16-bit PCM
   const samples = 1600
   const dataSize = samples * 2
@@ -16,28 +16,31 @@ export async function warmUpStt(): Promise<void> {
   buf.write('data', 36); buf.writeUInt32LE(dataSize, 40)
   // PCM data stays zero (silence)
   await transcribe(buf, 'wav')
-  log.ok(`Whisper warm — ${Date.now() - t0}ms`)
+  log.ok(`warm in ${Date.now() - t0}ms`)
 }
 
 export async function transcribe(
   audioBuffer: Buffer,
   format: 'webm' | 'wav' = 'webm',
 ): Promise<string> {
+  if (!config.STT_BASE_URL) throw new Error('speech recognition is not configured (STT_BASE_URL)')
+
   const mimeType = format === 'wav' ? 'audio/wav' : 'audio/webm'
   const filename = `audio.${format}`
 
   const formData = new FormData()
   const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType })
   formData.append('file', blob, filename)
-  formData.append('model', 'whisper-1') // required by API but value is ignored — model set in Docker config
+  formData.append('model', config.STT_MODEL)
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
   let response: Response
   try {
-    response = await fetch(`${config.WHISPER_URL}/v1/audio/transcriptions`, {
+    response = await fetch(`${config.STT_BASE_URL}/audio/transcriptions`, {
       method: 'POST',
+      headers: config.STT_API_KEY ? { Authorization: `Bearer ${config.STT_API_KEY}` } : {},
       body: formData,
       signal: controller.signal,
     })

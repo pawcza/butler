@@ -247,8 +247,8 @@ watch(activeState, async () => {
       </div>
     </div>
 
-    <!-- The open conversation — transcripts + Hermes output blocks; a stored thread loads from
-         conversation-api. ClientOnly: built from the URL and the WebSocket, so SSR would mismatch. -->
+    <!-- The open conversation: transcripts and response blocks. ClientOnly: built from the URL
+         and the WebSocket, so SSR would mismatch. -->
     <ClientOnly>
       <ChatLog
         :log="chatLog"

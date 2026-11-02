@@ -18,7 +18,6 @@ export default defineWebSocketHandler({
   },
 
   async message(peer, msg) {
-    log.info('message handler, peer:', peer.id, '| sessions size:', sessions.size, '| rawData type:', typeof msg.rawData, '| isBuffer:', Buffer.isBuffer(msg.rawData))
     const session = sessions.get(peer.id)
     if (!session) {
       log.warn('no session for peer:', peer.id)
@@ -86,6 +85,7 @@ export default defineWebSocketHandler({
   },
 
   close(peer) {
+    sessions.get(peer.id)?.abortTurn()
     sessions.delete(peer.id)
   },
 

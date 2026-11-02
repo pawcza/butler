@@ -1,11 +1,11 @@
-/** Shared types for the butler-core WebSocket event contract and session state. Imported by both server (Nitro) and client (Vue). */
+/** Shared types for the WebSocket event contract and session state. Imported by both server (Nitro) and client (Vue). */
 
 export type SessionState = 'IDLE' | 'LISTENING' | 'THINKING' | 'EXECUTING' | 'SPEAKING'
 
-/** A block is one item in Hermes's /v1/responses output: a tool call, a tool result, or a final assistant message. */
+/** A block is one item of a response: a tool call, a tool result, or a paragraph of assistant text. */
 export type BlockKind = 'tool_call' | 'tool_output' | 'message'
 
-/** A conversation thread as conversation-api keeps it. */
+/** A stored conversation thread. */
 export interface ConversationSummary {
   id: string
   title: string | null
@@ -24,7 +24,6 @@ export interface StoredMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
-  status: string
   createdAt: string
 }
 
@@ -39,7 +38,7 @@ export type ServerEvent =
   | { type: 'transcript'; id: string; text: string }
   /** Full final assistant text — pushed once at the end of a response, used for exchange history. */
   | { type: 'response'; text: string }
-  /** Start of a new Hermes response (one user turn can emit many blocks). */
+  /** Start of a new response (one user turn can emit many blocks). */
   | { type: 'response_start' }
   /** A new block began streaming. For tool_call, `tool` is the tool name. */
   | { type: 'block_start'; blockId: string; kind: BlockKind; tool?: string }

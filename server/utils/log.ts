@@ -16,14 +16,13 @@ const GRAY = '\x1b[90m'
 const SCOPE_COLORS: Record<string, string> = {
   butler: `${WHITE}${BOLD}`,
   config: `${WHITE}${BOLD}`,
-  ha: GREEN,
-  ollama: MAGENTA,
+  llm: MAGENTA,
+  mcp: GREEN,
   pipeline: CYAN,
   stt: BLUE,
+  tts: BLUE,
   ws: GRAY,
-  registry: GRAY,
-  timer: YELLOW,
-  news: GRAY,
+  conversations: YELLOW,
 }
 
 // ── Logger interface ─────────────────────────────────────────────────────────

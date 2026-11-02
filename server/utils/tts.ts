@@ -11,25 +11,25 @@ function usable(v: string | undefined): v is string {
 }
 
 export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffer> {
-  const model = usable(opts?.model) ? opts.model : config.PIPER_MODEL
-  const voice = usable(opts?.voice) ? opts.voice : config.PIPER_VOICE
+  const model = usable(opts?.model) ? opts.model : config.TTS_MODEL
+  const voice = usable(opts?.voice) ? opts.voice : config.TTS_VOICE
   log.info(`synthesize: ${text.length}ch | model=${model} voice=${voice} → "${text.slice(0, 100)}"`)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
   let response: Response
   try {
-    response = await fetch(`${config.PIPER_URL}/v1/audio/speech`, {
+    response = await fetch(`${config.TTS_BASE_URL}/audio/speech`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.TTS_API_KEY ? { Authorization: `Bearer ${config.TTS_API_KEY}` } : {}),
+      },
       body: JSON.stringify({
         model,
         input: text,
         voice,
-        response_format: config.PIPER_RESPONSE_FORMAT,
-        speed: 1,
-        stream_format: 'audio',
-        sample_rate: null,
+        response_format: config.TTS_RESPONSE_FORMAT,
       }),
       signal: controller.signal,
     })

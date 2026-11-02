@@ -19,7 +19,6 @@ const STATE_COLORS: Record<string, string> = {
   LISTENING: '#33aaff',
   THINKING: '#ffcc40',
   SPEAKING: '#ff6600',
-  GRACE: '#ff6600',
 }
 
 const cursorEl = ref<HTMLElement | null>(null)

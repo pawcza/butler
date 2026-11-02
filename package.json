@@ -1,21 +1,26 @@
 {
-  "name": "butler-core",
+  "name": "butler",
   "version": "0.2.0",
+  "description": "Self-hosted voice assistant with a particle avatar, for any OpenAI-compatible model",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
+    "postinstall": "nuxt prepare",
     "dev": "nuxt dev",
     "build": "nuxt build",
-    "start": "node .output/server/index.mjs",
+    "start": "node --env-file-if-exists=.env .output/server/index.mjs",
     "preview": "nuxt preview",
     "type-check": "nuxt typecheck",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "mock": "node --experimental-strip-types tests/support/mock-openai.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@nuxtjs/tailwindcss": "^6.12.0",
     "@ricky0123/vad-web": "^0.0.30",
     "@tresjs/cientos": "^5.4.0",
@@ -24,16 +29,14 @@
     "gsap": "^3.14.2",
     "nuxt": "^3.15.0",
     "postprocessing": "^6.38.3",
-    "rss-parser": "^3.13.0",
     "three": "^0.183.1",
-    "ws": "^8.19.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@nuxt/devtools": "latest",
     "@types/three": "^0.183.1",
-    "@types/ws": "^8.18.1",
     "typescript": "^5.6.0",
-    "vitest": "^2.0.0"
+    "vitest": "^2.0.0",
+    "vue-tsc": "^3.3.14"
   }
 }

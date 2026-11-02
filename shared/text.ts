@@ -1,6 +1,6 @@
 /** Pure, isomorphic text helpers shared between server and client. */
 
-/** Accepted shape for client-minted Hermes conversation ids (also enforced on server). */
+/** Accepted conversation id shape. Ids become file names, so this also keeps paths inside the store. */
 export const CONVERSATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 
 /** Safe stringification for logs/UI — strings pass through, objects JSON-encode, unserializable fall back to String(). */
@@ -18,6 +18,13 @@ export function stringify(value: unknown): string {
 export function truncatePreview(text: string, max: number): string {
   const clean = text.replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max)}…` : clean
+}
+
+/** The words after the wake word, or null if it wasn't said. Empty when it was said alone. */
+export function matchWakeWord(heard: string, wakeWord: string): string | null {
+  const at = heard.toLowerCase().indexOf(wakeWord.toLowerCase())
+  if (at === -1) return null
+  return heard.slice(at + wakeWord.length).replace(/^[,.\s!?]+/, '').trim()
 }
 
 const HTML_ESCAPE: Record<string, string> = {
