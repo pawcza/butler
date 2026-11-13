@@ -1,5 +1,10 @@
 export type ShapeName = 'triangle' | 'cube' | 'ring' | 'infinity' | 'pi' | 'alpha' | 'omega'
 
+/** Evenly spaced position along a segment of n points, lightly jittered, so neighbours form clean lines. */
+function along(j: number, n: number): number {
+  return (j + 0.2 + Math.random() * 0.6) / n
+}
+
 export function generateShapePositions(shape: ShapeName, count: number): Float32Array {
   switch (shape) {
     case 'triangle': return generateTriangle(count)
@@ -39,7 +44,7 @@ function generateTriangle(count: number): Float32Array {
     const a = verts[ai]!, b = verts[bi]!
 
     for (let j = 0; j < n && idx < count; j++) {
-      const t = Math.random()
+      const t = along(j, n)
       positions[idx * 3] = a[0] + (b[0] - a[0]) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 1] = a[1] + (b[1] - a[1]) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -78,7 +83,7 @@ function generateCube(count: number): Float32Array {
     const n = e < count % 12 ? perEdge + 1 : perEdge
     const edge = edges[e]!
     for (let j = 0; j < n && idx < count; j++) {
-      const t = Math.random()
+      const t = along(j, n)
       positions[idx * 3] = edge[0]! + (edge[3]! - edge[0]!) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 1] = edge[1]! + (edge[4]! - edge[1]!) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 2] = edge[2]! + (edge[5]! - edge[2]!) * t + (Math.random() - 0.5) * thickness
@@ -98,8 +103,9 @@ function generateRing(count: number): Float32Array {
   const r = 0.15
 
   for (let i = 0; i < count; i++) {
-    const theta = Math.random() * Math.PI * 2 // angle around the ring
-    const phi = Math.random() * Math.PI * 2   // angle around the tube
+    // R2 low-discrepancy sequence: even coverage of the torus, so neighbours make a clean mesh
+    const theta = ((i * 0.7548776662) % 1) * Math.PI * 2 // angle around the ring
+    const phi = ((i * 0.5698402910) % 1) * Math.PI * 2   // angle around the tube
     // Ring in XY plane (faces camera at Z=6 looking at origin)
     positions[i * 3] = (R + r * Math.cos(phi)) * Math.cos(theta)
     positions[i * 3 + 1] = (R + r * Math.cos(phi)) * Math.sin(theta)
@@ -119,7 +125,7 @@ function generateInfinity(count: number): Float32Array {
   const tube = 0.06  // tube radius for visible thickness
 
   for (let i = 0; i < count; i++) {
-    const t = Math.random() * Math.PI * 2
+    const t = ((i + Math.random() * 0.6) / count) * Math.PI * 2
     const sinT = Math.sin(t)
     const denom = 1 + sinT * sinT
     // Lemniscate curve in XY plane
@@ -161,7 +167,7 @@ function generatePi(count: number): Float32Array {
     const n = s < count % 3 ? perSeg + 1 : perSeg
     const seg = segments[s]!
     for (let j = 0; j < n && idx < count; j++) {
-      const t = Math.random()
+      const t = along(j, n)
       positions[idx * 3] = seg[0] + (seg[2] - seg[0]) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 1] = seg[1] + (seg[3] - seg[1]) * t + (Math.random() - 0.5) * thickness
       positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -184,7 +190,7 @@ function generateAlpha(count: number): Float32Array {
 
   // Full circle (the bowl)
   for (let i = 0; i < circleCount && idx < count; i++) {
-    const angle = Math.random() * Math.PI * 2
+    const angle = along(i, circleCount) * Math.PI * 2
     positions[idx * 3] = r * Math.cos(angle) + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 1] = r * Math.sin(angle) + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -194,7 +200,7 @@ function generateAlpha(count: number): Float32Array {
   // Tail: from right side of circle, curves upward
   const tailCount = count - circleCount
   for (let i = 0; i < tailCount && idx < count; i++) {
-    const t = Math.random()
+    const t = along(i, tailCount)
     positions[idx * 3] = r + t * 0.3 + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 1] = t * t * 0.5 + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -221,7 +227,7 @@ function generateOmega(count: number): Float32Array {
   const arcSpan = 240 * Math.PI / 180
 
   for (let i = 0; i < arcCount && idx < count; i++) {
-    const angle = arcStart + Math.random() * arcSpan
+    const angle = arcStart + along(i, arcCount) * arcSpan
     positions[idx * 3] = r * Math.cos(angle) + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 1] = r * Math.sin(angle) + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -232,7 +238,7 @@ function generateOmega(count: number): Float32Array {
   const rightEndX = r * Math.cos(arcStart)
   const rightEndY = r * Math.sin(arcStart)
   for (let i = 0; i < footCount && idx < count; i++) {
-    const t = Math.random()
+    const t = along(i, footCount)
     positions[idx * 3] = rightEndX + t * footLen + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 1] = rightEndY + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness
@@ -243,7 +249,7 @@ function generateOmega(count: number): Float32Array {
   const leftEndX = r * Math.cos(arcStart + arcSpan)
   const leftEndY = r * Math.sin(arcStart + arcSpan)
   for (let i = 0; i < footCount && idx < count; i++) {
-    const t = Math.random()
+    const t = along(i, footCount)
     positions[idx * 3] = leftEndX - t * footLen + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 1] = leftEndY + (Math.random() - 0.5) * thickness
     positions[idx * 3 + 2] = (Math.random() - 0.5) * thickness

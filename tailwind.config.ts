@@ -9,12 +9,7 @@ export default {
     extend: {
       colors: {
         ap: {
-          bg: '#0a0a0a',
-          panel: '#111111',
-          border: '#222222',
-          muted: '#444444',
-          orange: '#ff6600',
-          blue: '#33aaff',
+          bg: '#1c1d20',
           red: '#ff3333',
         },
       },

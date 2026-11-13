@@ -13,22 +13,41 @@ describe('useAvatarState', () => {
   it('starts with IDLE params', () => {
     const state = makeRef('IDLE')
     const { current } = useAvatarState(state)
-    expect(current.condense).toBe(0.7)
+    expect(current.condense).toBe(0.97)
     expect(current.flowSpeed).toBeGreaterThan(0)
-    expect(current.bloomIntensity).toBeGreaterThan(0)
+    expect(current.looseLineOpacity).toBeGreaterThan(0)
+    expect(current.shapeLineOpacity).toBeGreaterThan(0)
+  })
+
+  it('keeps the loose lines quiet and constant, with the shape lines carrying the state', () => {
+    const at = (s: string) => useAvatarState(makeRef(s)).current
+    for (const s of ['IDLE', 'LISTENING', 'THINKING', 'SPEAKING']) {
+      expect(at(s).looseLineOpacity).toBe(at('IDLE').looseLineOpacity)
+      expect(at(s).shapeLineOpacity).toBeGreaterThan(at(s).looseLineOpacity * 2)
+    }
+    for (const s of ['LISTENING', 'THINKING', 'SPEAKING']) {
+      expect(at(s).shapeLineOpacity).toBeGreaterThanOrEqual(at('IDLE').shapeLineOpacity)
+    }
+  })
+
+  it('reports the shape it starts in, so a scene mounted mid-turn can seed the right one', () => {
+    expect(useAvatarState(makeRef('IDLE')).initialShape).toBe('ring')
+    expect(useAvatarState(makeRef('THINKING')).initialShape).toBe('cube')
+    expect(useAvatarState(makeRef('LISTENING')).initialShape).toBe('triangle')
+    expect(useAvatarState(makeRef('SPEAKING')).initialShape).toBeNull()
   })
 
   it('lerps numeric params toward target state', () => {
     const state = makeRef('IDLE')
     const { current, update } = useAvatarState(state)
-    const initialBloom = current.bloomIntensity
+    const initialSpin = current.spinSpeed
 
     state.value = 'THINKING'
     // Simulate several frames of lerping
     for (let i = 0; i < 60; i++) update(1 / 60)
 
     expect(current.condense).toBeGreaterThan(0.9)
-    expect(current.bloomIntensity).toBeGreaterThan(initialBloom)
+    expect(current.spinSpeed).toBeGreaterThan(initialSpin)
   })
 
   it('returns shapeChanged when entering a shape state', () => {

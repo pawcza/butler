@@ -13,21 +13,18 @@ export interface AvatarParams {
   shapeMorph: number        // 0 = previous shape, 1 = current shape (reset on shape change)
   flowSpeed: number         // galaxy orbit/drift speed
   wobbleAmount: number      // organic sine wobble amplitude
-  particleBrightness: number // base opacity/brightness
-  bloomIntensity: number    // post-processing bloom
+  particleBrightness: number // opacity of the dots
+  looseLineOpacity: number  // opacity of the loose background constellation lines
+  shapeLineOpacity: number  // opacity of the lines that draw the shape
   spinSpeed: number         // rotation speed of condensed shape
-  chromaticIntensity: number // chromatic aberration offset magnitude
-  distortionIntensity: number // heat-haze distortion strength (center-focused)
 }
 
 // ── Palette ──────────────────────────────────────────────────────────────────
-const AP_GREY: RGB = { r: 0.45, g: 0.45, b: 0.45 }
-const AP_ORANGE: RGB = { r: 1.0, g: 0.4, b: 0.0 }
-const AP_WARMWHITE: RGB = { r: 1.0, g: 0.85, b: 0.5 }
-const AP_BLUE: RGB = { r: 0.2, g: 0.667, b: 1.0 }
-const AP_AMBER: RGB = { r: 1.0, g: 0.65, b: 0.1 }
-const AP_GREEN: RGB = { r: 0.2, g: 0.9, b: 0.3 }
-const AP_PURPLE: RGB = { r: 0.65, g: 0.2, b: 0.9 }
+// Greys and off-whites; the state colour is only a faint tint.
+const AP_GREY: RGB = { r: 0.80, g: 0.82, b: 0.84 }
+const AP_BLUE: RGB = { r: 0.72, g: 0.84, b: 0.98 }
+const AP_AMBER: RGB = { r: 0.97, g: 0.88, b: 0.70 }
+const AP_ORANGE: RGB = { r: 0.97, g: 0.80, b: 0.70 }
 
 // ── State definitions ────────────────────────────────────────────────────────
 interface StateOverride {
@@ -37,10 +34,9 @@ interface StateOverride {
   flowSpeed: number
   wobbleAmount: number
   particleBrightness: number
-  bloomIntensity: number
+  looseLineOpacity: number
+  shapeLineOpacity: number
   spinSpeed: number
-  chromaticIntensity: number
-  distortionIntensity: number
 }
 
 const DEFAULTS: StateOverride = {
@@ -49,18 +45,17 @@ const DEFAULTS: StateOverride = {
   condense: 0,
   flowSpeed: 0.03,
   wobbleAmount: 0.02,
-  particleBrightness: 0.15,
-  bloomIntensity: 0.03,
+  particleBrightness: 0.7,
+  looseLineOpacity: 0.35,
+  shapeLineOpacity: 0.6,
   spinSpeed: 0,
-  chromaticIntensity: 0.003,
-  distortionIntensity: 0,
 }
 
 const STATE_OVERRIDES: Record<DisplayState, Partial<StateOverride>> = {
-  IDLE: { shape: 'ring', condense: 0.7, flowSpeed: 0.04, particleBrightness: 0.25, wobbleAmount: 0.025, chromaticIntensity: 0.003 },
-  LISTENING: { color: AP_BLUE, shape: 'triangle', condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.006, distortionIntensity: 0.003 },
-  THINKING: { color: AP_AMBER, shape: 'cube', condense: 1, flowSpeed: 0.15, wobbleAmount: 0.015, particleBrightness: 0.35, bloomIntensity: 0.15, spinSpeed: 1.2, chromaticIntensity: 0.012, distortionIntensity: 0.008 },
-  SPEAKING: { color: AP_ORANGE, condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.3, bloomIntensity: 0.08, spinSpeed: 0.3, chromaticIntensity: 0.008, distortionIntensity: 0.005 },
+  IDLE: { shape: 'ring', condense: 0.97, flowSpeed: 0.04, particleBrightness: 1, shapeLineOpacity: 0.8, wobbleAmount: 0.02 },
+  LISTENING: { color: AP_BLUE, shape: 'triangle', condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.9, shapeLineOpacity: 0.85, spinSpeed: 0.3 },
+  THINKING: { color: AP_AMBER, shape: 'cube', condense: 1, flowSpeed: 0.15, wobbleAmount: 0.015, particleBrightness: 1, shapeLineOpacity: 1, spinSpeed: 1.2 },
+  SPEAKING: { color: AP_ORANGE, condense: 1, flowSpeed: 0.08, wobbleAmount: 0.01, particleBrightness: 0.95, shapeLineOpacity: 0.9, spinSpeed: 0.3 },
 }
 
 /** Pool of shapes used for SPEAKING — a random one is picked each time, never the same twice. */
@@ -78,10 +73,9 @@ function resolveParams(overrides: Partial<StateOverride>): AvatarParams {
     flowSpeed: merged.flowSpeed,
     wobbleAmount: merged.wobbleAmount,
     particleBrightness: merged.particleBrightness,
-    bloomIntensity: merged.bloomIntensity,
+    looseLineOpacity: merged.looseLineOpacity,
+    shapeLineOpacity: merged.shapeLineOpacity,
     spinSpeed: merged.spinSpeed,
-    chromaticIntensity: merged.chromaticIntensity,
-    distortionIntensity: merged.distortionIntensity,
   }
 }
 
@@ -108,7 +102,8 @@ function resolveShape(state: DisplayState): ShapeName | null {
 export function useAvatarState(activeState: Ref<string>) {
   const initial = (activeState.value as DisplayState) ?? 'IDLE'
   const current = cloneParams(STATE_PARAMS[initial] ?? STATE_PARAMS.IDLE)
-  let currentShape: ShapeName | null = resolveShape(initial)
+  const initialShape = resolveShape(initial)
+  let currentShape: ShapeName | null = initialShape
   let prevDisplayState: DisplayState | null = null
   let lastSpeakingShape: ShapeName | null = null
 
@@ -154,5 +149,6 @@ export function useAvatarState(activeState: Ref<string>) {
     return { shapeChanged }
   }
 
-  return { current, update }
+  /** The shape the avatar starts in, for seeding the render buffers; null when it starts as a loose cloud. */
+  return { current, update, initialShape }
 }

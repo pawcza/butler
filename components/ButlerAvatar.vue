@@ -15,10 +15,10 @@ const emit = defineEmits<{
 
 // ---------- Custom cursor ----------
 const STATE_COLORS: Record<string, string> = {
-  IDLE: '#737373',
-  LISTENING: '#33aaff',
-  THINKING: '#ffcc40',
-  SPEAKING: '#ff6600',
+  IDLE: '#b4b8bd',
+  LISTENING: '#b8d6fa',
+  THINKING: '#f7e0b3',
+  SPEAKING: '#f7ccb3',
 }
 
 const cursorEl = ref<HTMLElement | null>(null)
@@ -35,7 +35,7 @@ onMounted(async () => {
   gsapReady = true
 })
 
-const cursorColor = computed(() => STATE_COLORS[props.activeState] ?? '#737373')
+const cursorColor = computed(() => STATE_COLORS[props.activeState] ?? '#b4b8bd')
 
 function onMouseMove(e: MouseEvent) {
   // gsap.set() — instant DOM update, no interpolation lag, bypasses Vue reactivity
@@ -75,7 +75,7 @@ function onPointerUp() {
 
 <template>
   <div
-    :class="['fixed inset-0 z-0', isTouch ? 'cursor-pointer' : 'cursor-none']"
+    :class="['fixed inset-0 z-0 bg-[radial-gradient(ellipse_at_50%_45%,#3d4045_0%,#2b2d31_50%,#1c1d20_100%)]', isTouch ? 'cursor-pointer' : 'cursor-none']"
     @mousemove="onMouseMove"
     @mousedown="onPointerDown"
     @mouseup="onPointerUp"
@@ -85,7 +85,7 @@ function onPointerUp() {
   >
     <TresCanvas
       :alpha="true"
-      :clear-color="'#0a0a0a'"
+      :clear-alpha="0"
       window-size
       :power-preference="'high-performance'"
     >
@@ -103,7 +103,7 @@ function onPointerUp() {
         class="h-6 w-6 rounded-full"
         :style="{
           border: `1.5px solid ${cursorColor}`,
-          boxShadow: `0 0 8px ${cursorColor}, 0 0 16px ${cursorColor}40`,
+          boxShadow: `0 0 6px ${cursorColor}40`,
           ...(pressing ? { backgroundColor: `${cursorColor}30` } : {}),
         }"
       />

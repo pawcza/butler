@@ -96,18 +96,18 @@ function onPointerCancel(): void {
           >
             <div
               v-if="item.kind === 'user'"
-              class="backdrop-blur-xl bg-ap-blue/15 border border-ap-blue/20 rounded-xl rounded-br-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.3)] max-w-[85%]"
+              class="backdrop-blur-xl bg-white/10 border border-white/15 rounded-xl rounded-br-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.3)] max-w-[85%]"
             >
-              <p class="text-sm font-mono text-ap-blue/90 leading-relaxed">{{ item.text }}</p>
+              <p class="text-sm font-mono text-gray-100 leading-relaxed">{{ item.text }}</p>
             </div>
             <div
               v-else-if="item.kind === 'message'"
-              class="backdrop-blur-xl bg-black/60 border border-ap-orange/25 rounded-xl rounded-bl-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.5)] max-w-[85%]"
+              class="backdrop-blur-xl bg-black/60 border border-white/10 rounded-xl rounded-bl-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.5)] max-w-[85%]"
             >
               <p class="chat-md text-sm font-mono text-gray-100 leading-relaxed whitespace-pre-wrap">
                 <span v-html="renderInlineMarkdown(item.text)" /><span
                   v-if="item.streaming"
-                  class="inline-block w-[2px] h-[14px] bg-ap-orange/80 ml-0.5 align-middle animate-pulse"
+                  class="inline-block w-[2px] h-[14px] bg-white/70 ml-0.5 align-middle animate-pulse"
                 />
               </p>
             </div>
@@ -115,10 +115,10 @@ function onPointerCancel(): void {
               v-else
               class="backdrop-blur-md bg-black/40 border border-white/5 rounded-lg px-3 py-1.5 max-w-[85%]"
             >
-              <p class="text-xs font-mono text-gray-500 leading-relaxed">
-                <span class="text-ap-blue/70">{{ item.kind === 'tool_call' ? '→' : '←' }}</span>
+              <p class="text-xs font-mono text-gray-400 leading-relaxed">
+                <span class="text-gray-300">{{ item.kind === 'tool_call' ? '→' : '←' }}</span>
                 <template v-if="item.kind === 'tool_call'">
-                  {{ ' ' }}{{ item.tool ?? 'tool' }}<span v-if="item.text" class="text-gray-600"> ({{ truncatePreview(item.text, 80) }})</span><span v-if="item.streaming" class="text-gray-600"> …</span>
+                  {{ ' ' }}{{ item.tool ?? 'tool' }}<span v-if="item.text" class="text-gray-400"> ({{ truncatePreview(item.text, 80) }})</span><span v-if="item.streaming" class="text-gray-400"> …</span>
                 </template>
                 <template v-else>
                   {{ ' ' }}{{ truncatePreview(item.text, 140) }}
@@ -136,7 +136,7 @@ function onPointerCancel(): void {
           rows="1"
           :disabled="!canSend"
           placeholder="Type to Butler, or hold to speak…"
-          class="chat-input w-full resize-none backdrop-blur-xl bg-black/50 border border-white/10 focus:border-ap-orange/40 focus:outline-none rounded-xl px-4 py-2.5 text-sm font-mono text-gray-100 placeholder:text-gray-500 leading-relaxed transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          class="chat-input w-full resize-none backdrop-blur-xl bg-black/50 border border-white/10 focus:border-white/30 focus:outline-none rounded-xl px-4 py-2.5 text-sm font-mono text-gray-100 placeholder:text-gray-400 leading-relaxed transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           @input="autoResize"
           @keydown.enter.exact.prevent="onSend"
         />
@@ -176,7 +176,7 @@ function onPointerCancel(): void {
   font-size: 0.85em;
 }
 .chat-md :deep(a) {
-  color: rgb(var(--color-ap-blue, 59 130 246) / 0.9);
+  color: rgb(255 255 255 / 0.95);
   text-decoration: underline;
   text-underline-offset: 2px;
 }

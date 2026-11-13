@@ -120,10 +120,10 @@ const stateLabel: Record<string, string> = {
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
-    case 'LISTENING': return 'text-ap-blue'
-    case 'THINKING': return 'text-amber-400'
-    case 'SPEAKING': return 'text-orange-400'
-    default: return 'text-ap-muted'
+    case 'LISTENING': return 'text-sky-200/80'
+    case 'THINKING': return 'text-amber-100/80'
+    case 'SPEAKING': return 'text-orange-100/80'
+    default: return 'text-gray-400'
   }
 })
 
@@ -179,10 +179,10 @@ watch(activeState, async () => {
       <!-- Top bar — branding (left) + audio/fullscreen controls (right) -->
       <div ref="brandingEl" class="shrink-0 flex items-center gap-3 px-4 sm:px-6 pt-5 safe-area-top">
         <div class="flex items-center gap-2 min-w-0">
-          <span class="text-2xl sm:text-3xl font-black tracking-[0.25em] uppercase text-ap-orange drop-shadow-[0_0_20px_rgba(255,102,0,0.4)]">BUTLER</span>
+          <span class="text-2xl sm:text-3xl font-black tracking-[0.25em] uppercase text-gray-200">BUTLER</span>
           <span
             class="w-2 h-2 rounded-full shrink-0 transition-colors duration-500"
-            :class="isConnected ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.8)]' : 'bg-ap-red shadow-[0_0_8px_rgba(239,68,68,0.8)]'"
+            :class="isConnected ? 'bg-gray-300' : 'bg-gray-600'"
             :aria-label="isConnected ? 'Connected' : 'Disconnected'"
           />
         </div>
@@ -240,8 +240,7 @@ watch(activeState, async () => {
           {{ stateLabel[activeState] ?? activeState }}
           <span
             v-if="activeState === 'THINKING'"
-            class="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
-            :class="activeState === 'THINKING' ? 'bg-amber-400' : 'bg-green-400'"
+            class="inline-block w-1.5 h-1.5 rounded-full animate-pulse bg-amber-100/70"
           />
         </span>
       </div>
