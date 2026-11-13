@@ -29,7 +29,7 @@ Single Nuxt 3 project. Nitro is the backend (REST + WebSocket), Vue the frontend
 - `server/plugins/startup.ts`: connects MCP and warms up STT without blocking startup.
 - `shared/types.ts`: the WebSocket event contract and stored thread types.
 - `composables/useVoice.ts`: client audio, VAD, wake word and WebSocket state.
-- `composables/useAvatarState.ts`, `components/ButlerScene.vue`, `shaders/`, `utils/shapes.ts`: the particle avatar.
+- `composables/useAvatarState.ts`, `components/ButlerScene.vue`, `shaders/`, `utils/shapes.ts`, `utils/plexus.ts`: the plexus avatar (points and nearest-neighbour lines, positioned on the GPU by one shared GLSL chunk).
 
 ## Rules
 
@@ -38,7 +38,8 @@ Single Nuxt 3 project. Nitro is the backend (REST + WebSocket), Vue the frontend
 - Every session starts clean: the first message opens a thread, `?c=<id>` reopens one. A thread that no longer exists falls back to a new one.
 - Failed tool calls go back to the model as tool results. Never retry one: it may have had a real-world effect.
 - A failing MCP server must never stop Butler, and with none configured no `tools` field is sent.
-- Don't send optional request fields such as `stream_options`. Not all compatible servers accept them, and nothing here needs usage data.
+- Don't send optional request fields such as `stream_options`. Not all compatible servers accept them, and nothing here needs usage data. `user` (the OIDC `sub`, or `LLM_USER`) and `metadata.locale` (`LLM_LOCALE`) go out only when set, and an empty `LLM_SYSTEM_PROMPT` sends no system message.
+- A persona server sends its named SSE events only when asked (`x-persona-events: 1`, sent when `LLM_PERSONA_EVENTS=1`); without it the stream is plain OpenAI. Named events are ignored, except `persona.tool_activity` (a server running tools itself: shown as a tool call block) and `persona.reset` (drops the open paragraph and the stored reply so far; paragraphs already shown and spoken stay).
 - All base URLs include `/v1`.
 - The client's IDLE state follows the server, not audio playback: playback can finish while a tool loop is still running.
 

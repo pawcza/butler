@@ -5,6 +5,7 @@ import {
   createParagraphChunker,
   createToolCallAccumulator,
   readSse,
+  readSseEvents,
   respond,
   type BlockHandlers,
   type RespondOptions,
@@ -60,6 +61,25 @@ describe('readSse', () => {
 
   it('stops at [DONE]', async () => {
     expect(await collect(readSse(byteStream('data: one\n\ndata: [DONE]\n\ndata: late\n\n')))).toEqual(['one'])
+  })
+})
+
+describe('readSseEvents', () => {
+  it('names each frame, skips comments, and treats a blank line as the end of the event name', async () => {
+    const stream = byteStream(
+      ': queued 2 ahead\n\n',
+      'event: persona.tool_activity\ndata: {"name":"x"}\n\n',
+      'data: plain\n\n',
+      'event: persona.reset\ndata: {}\n\n',
+      'data: [DONE]\n\n',
+    )
+    const frames: Array<[string, string]> = []
+    for await (const frame of readSseEvents(stream)) frames.push([frame.event, frame.data])
+    expect(frames).toEqual([
+      ['persona.tool_activity', '{"name":"x"}'],
+      ['', 'plain'],
+      ['persona.reset', '{}'],
+    ])
   })
 })
 
@@ -172,6 +192,7 @@ describe('respond', () => {
   beforeEach(() => {
     mock.requests.length = 0
     mock.authorizations.length = 0
+    mock.eventHeaders.length = 0
     options = { baseUrl: mock.url, model: 'test' }
   })
 
@@ -203,6 +224,79 @@ describe('respond', () => {
     })
     const result = await respond(messages, recorder().handlers, options)
     expect(result.finalMessage).toBe('ok then')
+  })
+
+  it('asks for persona events with a header only when told to', async () => {
+    mock.enqueue({ frames: textFrames('a') }, { frames: textFrames('b') })
+    await respond(messages, recorder().handlers, options)
+    await respond(messages, recorder().handlers, { ...options, personaEvents: true })
+    expect(mock.eventHeaders).toEqual([undefined, '1'])
+    expect(mock.requests[1]).toEqual({ model: 'test', messages, stream: true })
+  })
+
+  it('sends user and metadata.locale only when given', async () => {
+    mock.enqueue({ frames: textFrames('a') }, { frames: textFrames('b') })
+    await respond(messages, recorder().handlers, { ...options, user: 'sub-123', locale: 'pl' })
+    await respond(messages, recorder().handlers, options)
+    expect(mock.requests[0]).toEqual({ model: 'test', messages, stream: true, user: 'sub-123', metadata: { locale: 'pl' } })
+    expect(Object.keys(mock.requests[1] ?? {})).toEqual(['model', 'messages', 'stream'])
+  })
+
+  it('shows tool activity the server runs itself, ignoring queue comments and unknown events', async () => {
+    mock.enqueue({
+      frames: [
+        ': queued 1 ahead\n\n',
+        'event: persona.queued\ndata: {"position":1}\n\n',
+        'event: persona.tool_activity\ndata: {"name":"ha_call","phase":"start","label":"Turning on the light"}\n\n',
+        ': keepalive\n\n',
+        'event: persona.tool_activity\ndata: {"name":"web_search","phase":"start"}\n\n',
+        'event: persona.tool_activity\ndata: {"name":"ha_call","phase":"end"}\n\n',
+        'event: persona.tool_activity\ndata: {not json\n\n',
+        'event: persona.tool_activity\ndata: {"name":"nope","phase":"end"}\n\n',
+        'event: persona.tool_activity\ndata: {"phase":"start"}\n\n',
+        ...textFrames('Done.'),
+      ],
+    })
+    const { events, handlers, spoken } = recorder()
+    const result = await respond(messages, handlers, options)
+    const shown = events.filter((e) => e.includes('-srv')).map((e) => e.replace(/msg-\w+-/, ''))
+    expect(shown).toEqual([
+      'start srv1.call tool_call Turning on the light',
+      'start srv2.call tool_call web_search',
+      'end srv1.call ',
+      // web_search never got its end, so it is closed when the stream finishes
+      'end srv2.call ',
+    ])
+    expect(spoken()).toEqual(['Done.'])
+    expect(result.finalMessage).toBe('Done.')
+  })
+
+  it('closes tool activity that is still open when the stream fails', async () => {
+    mock.enqueue({
+      frames: [
+        'event: persona.tool_activity\ndata: {"name":"web_search","phase":"start"}\n\n',
+        { error: { message: 'overloaded' } },
+      ],
+    })
+    const { events, handlers } = recorder()
+    await expect(respond(messages, handlers, options)).rejects.toThrow(/overloaded/)
+    expect(events.at(-1)).toMatch(/^end msg-\w+-srv1\.call $/)
+  })
+
+  it('persona.reset drops the unspoken partial text and the stored reply, not what was already spoken', async () => {
+    mock.enqueue({
+      frames: [
+        chunk({ content: 'First draft.\nhalf a sent' }),
+        'event: persona.reset\ndata: {}\n\n',
+        ...textFrames('Fresh start.'),
+      ],
+    })
+    const { events, handlers, spoken } = recorder()
+    const result = await respond(messages, handlers, options)
+    // The first paragraph had already gone to speech; the open one was ended without being spoken
+    expect(spoken()).toEqual(['First draft.', 'Fresh start.'])
+    expect(events.some((e) => e.startsWith('end ') && e.endsWith('.2 half a sent'))).toBe(true)
+    expect(result.finalMessage).toBe('Fresh start.')
   })
 
   it('flushes what it has when the stream ends without [DONE]', async () => {
@@ -292,6 +386,11 @@ describe('buildMessages', () => {
       { role: 'assistant', content: 'w' },
       { role: 'user', content: 'new' },
     ])
+  })
+
+  it('sends no system message for an empty or blank prompt', () => {
+    expect(buildMessages([], 'c', '')).toEqual([{ role: 'user', content: 'c' }])
+    expect(buildMessages([], 'c', '  ')).toEqual([{ role: 'user', content: 'c' }])
   })
 
   it('always keeps the new message, however long', () => {

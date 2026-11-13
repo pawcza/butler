@@ -14,6 +14,11 @@ describe('SessionManager', () => {
     expect(cb).toHaveBeenCalledWith('LISTENING')
   })
 
+  it('carries the signed-in user id, or null when login is off', () => {
+    expect(new SessionManager(vi.fn(), 'sub-1').getUserId()).toBe('sub-1')
+    expect(new SessionManager(vi.fn()).getUserId()).toBeNull()
+  })
+
   it('tts preferences default to null', () => {
     const sm = new SessionManager(vi.fn())
     expect(sm.getTtsModel()).toBeNull()

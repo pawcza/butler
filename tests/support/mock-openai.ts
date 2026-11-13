@@ -26,6 +26,8 @@ export interface MockOpenAI {
   requests: Array<Record<string, unknown>>
   /** Authorization header of every chat completion request. */
   authorizations: Array<string | undefined>
+  /** `x-persona-events` header of every chat completion request. */
+  eventHeaders: Array<string | undefined>
   /** Streams the client hung up on before they finished. */
   disconnects: () => number
   enqueue: (...responses: ScriptedResponse[]) => void
@@ -103,12 +105,15 @@ export async function startMockOpenAI(port = 0): Promise<MockOpenAI> {
   const queue: ScriptedResponse[] = []
   const requests: Array<Record<string, unknown>> = []
   const authorizations: Array<string | undefined> = []
+  const eventHeaders: Array<string | undefined> = []
   let disconnects = 0
 
   async function chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = JSON.parse((await readBody(req)).toString('utf-8')) as Record<string, unknown>
     requests.push(body)
     authorizations.push(req.headers.authorization)
+    const events = req.headers['x-persona-events']
+    eventHeaders.push(Array.isArray(events) ? events.join(',') : events)
     const scripted = queue.shift() ?? demoResponse(body)
 
     if (scripted.status !== undefined || scripted.json !== undefined) {
@@ -160,6 +165,7 @@ export async function startMockOpenAI(port = 0): Promise<MockOpenAI> {
     url: `http://127.0.0.1:${bound}/v1`,
     requests,
     authorizations,
+    eventHeaders,
     disconnects: () => disconnects,
     enqueue: (...responses) => { queue.push(...responses) },
     close: () => new Promise((resolve) => {

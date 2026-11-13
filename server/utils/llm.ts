@@ -52,6 +52,15 @@ export interface RespondOptions {
   signal?: AbortSignal
   /** Give up if the server sends nothing for this long. Any byte counts, including keepalives. */
   stallTimeoutMs?: number
+  /** Sent as the OpenAI `user` field: an opaque, stable id for whoever is asking. Never a name or email. */
+  user?: string
+  /** Sent as `metadata.locale`. Servers that don't know the field ignore it. */
+  locale?: string
+  /**
+   * Sends `x-persona-events: 1`: a persona server then adds its named events (tool activity, reset)
+   * to the stream. Without it the stream is plain OpenAI.
+   */
+  personaEvents?: boolean
 }
 
 export class LlmAbortedError extends Error {
@@ -78,32 +87,39 @@ interface CompletionChunk {
   error?: { message?: string } | string
 }
 
+/** One frame of a server-sent event stream. `event` is empty for the standard unnamed frames. */
+export interface SseEvent {
+  event: string
+  data: string
+}
+
 /**
- * Yields each `data:` payload of a server-sent event stream, stopping at `[DONE]`.
- * Comments are skipped, and so are named events: extensions some servers add to the
- * standard unnamed chunks.
+ * Yields every `data:` frame of a server-sent event stream with its event name, stopping at
+ * an unnamed `[DONE]`. Comment lines (`: keepalive`, `: queued 2 ahead`) are skipped.
  */
-export async function* readSse(
+export async function* readSseEvents(
   body: ReadableStream<Uint8Array>,
   onActivity: () => void = () => {},
-): AsyncGenerator<string> {
+): AsyncGenerator<SseEvent> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let eventName = ''
 
-  function* drain(lines: string[]): Generator<string> {
+  function* drain(lines: string[]): Generator<SseEvent> {
     for (const raw of lines) {
       const line = raw.trim()
       if (!line) {
         eventName = ''
       } else if (line.startsWith('event:')) {
         eventName = line.slice(6).trim()
-      } else if (line.startsWith('data:') && (!eventName || eventName === 'message')) {
-        yield line.slice(5).trim()
+      } else if (line.startsWith('data:')) {
+        yield { event: eventName, data: line.slice(5).trim() }
       }
     }
   }
+
+  const isDone = (frame: SseEvent): boolean => (!frame.event || frame.event === 'message') && frame.data === '[DONE]'
 
   try {
     while (true) {
@@ -113,16 +129,29 @@ export async function* readSse(
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
-      for (const data of drain(lines)) {
-        if (data === '[DONE]') return
-        yield data
+      for (const frame of drain(lines)) {
+        if (isDone(frame)) return
+        yield frame
       }
     }
-    for (const data of drain([buffer])) {
-      if (data !== '[DONE]') yield data
+    for (const frame of drain([buffer])) {
+      if (!isDone(frame)) yield frame
     }
   } finally {
     await reader.cancel().catch(() => {})
+  }
+}
+
+/**
+ * Yields each unnamed `data:` payload of a server-sent event stream, stopping at `[DONE]`.
+ * Named events are skipped: extensions some servers add to the standard chunks.
+ */
+export async function* readSse(
+  body: ReadableStream<Uint8Array>,
+  onActivity: () => void = () => {},
+): AsyncGenerator<string> {
+  for await (const { event, data } of readSseEvents(body, onActivity)) {
+    if (!event || event === 'message') yield data
   }
 }
 
@@ -176,6 +205,14 @@ export function createParagraphChunker(messageId: string, handlers: BlockHandler
     abandon(): void {
       if (blockId) endBlock()
     },
+    /**
+     * The server started the message over. Paragraphs already shown and spoken can't be taken back,
+     * but the open one is ended unspoken and nothing so far counts towards the stored reply.
+     */
+    reset(): void {
+      if (blockId) endBlock()
+      paragraphs.length = 0
+    },
     paragraphs,
   }
 }
@@ -220,6 +257,44 @@ export function createToolCallAccumulator() {
   }
 }
 
+/**
+ * A server that runs tools itself can announce them as named SSE events. They are shown like local
+ * tool calls, as a call block that spins until its `end`. Anything malformed is ignored.
+ */
+const TOOL_ACTIVITY_EVENT = 'persona.tool_activity'
+/** The server discarded what it streamed so far and starts the message over. */
+const RESET_EVENT = 'persona.reset'
+const MAX_TOOL_LABEL_CHARS = 120
+
+function createServerToolTracker(idPrefix: string, handlers: BlockHandlers) {
+  /** Open block ids per tool name, oldest first, so overlapping calls to one tool close in order. */
+  const open = new Map<string, string[]>()
+  let count = 0
+
+  return {
+    handle(data: unknown): void {
+      if (typeof data !== 'object' || data === null) return
+      const { name, phase, label } = data as Record<string, unknown>
+      if (typeof name !== 'string' || !name) return
+      if (phase === 'start') {
+        count += 1
+        const blockId = `${idPrefix}-srv${count}.call`
+        const shown = typeof label === 'string' && label.trim() ? label.trim() : name
+        handlers.onBlockStart(blockId, 'tool_call', { tool: shown.slice(0, MAX_TOOL_LABEL_CHARS) })
+        open.set(name, [...(open.get(name) ?? []), blockId])
+      } else if (phase === 'end') {
+        const blockId = open.get(name)?.shift()
+        if (blockId) handlers.onBlockEnd(blockId, '')
+      }
+    },
+    /** The stream is over: whatever never got its `end` must stop spinning. */
+    closeAll(): void {
+      for (const ids of open.values()) for (const id of ids) handlers.onBlockEnd(id, '')
+      open.clear()
+    },
+  }
+}
+
 interface Turn {
   text: string
   paragraphs: string[]
@@ -254,8 +329,10 @@ async function streamTurn(
   const onOuterAbort = (): void => controller.abort()
   options.signal?.addEventListener('abort', onOuterAbort, { once: true })
 
-  const chunker = createParagraphChunker(`msg-${randomUUID().slice(0, 8)}`, handlers)
-  const toolCalls = createToolCallAccumulator()
+  const messageId = `msg-${randomUUID().slice(0, 8)}`
+  const chunker = createParagraphChunker(messageId, handlers)
+  const serverTools = createServerToolTracker(messageId, handlers)
+  let toolCalls = createToolCallAccumulator()
   let text = ''
 
   function apply(chunk: CompletionChunk): void {
@@ -271,6 +348,20 @@ async function streamTurn(
     if (choice?.finish_reason === 'error') throw new Error('LLM stream error: the server reported a failed turn')
   }
 
+  function applyNamed(event: string, data: string): void {
+    if (event === RESET_EVENT) {
+      chunker.reset()
+      toolCalls = createToolCallAccumulator()
+      text = ''
+    } else if (event === TOOL_ACTIVITY_EVENT) {
+      try {
+        serverTools.handle(JSON.parse(data))
+      } catch {
+        log.warn(`skipping unparseable ${event}: ${data.slice(0, 200)}`)
+      }
+    }
+  }
+
   try {
     onActivity()
     const response = await fetch(`${options.baseUrl}/chat/completions`, {
@@ -278,11 +369,14 @@ async function streamTurn(
       headers: {
         'Content-Type': 'application/json',
         ...(options.apiKey ? { Authorization: `Bearer ${options.apiKey}` } : {}),
+        ...(options.personaEvents ? { 'x-persona-events': '1' } : {}),
       },
       body: JSON.stringify({
         model: options.model,
         messages,
         stream: true,
+        ...(options.user ? { user: options.user } : {}),
+        ...(options.locale ? { metadata: { locale: options.locale } } : {}),
         ...(tools.length > 0 ? { tools } : {}),
       }),
       signal: controller.signal,
@@ -296,7 +390,11 @@ async function streamTurn(
     if (!response.body) throw new Error('LLM returned no body')
 
     if (response.headers.get('content-type')?.includes('text/event-stream')) {
-      for await (const data of readSse(response.body, onActivity)) {
+      for await (const { event, data } of readSseEvents(response.body, onActivity)) {
+        if (event && event !== 'message') {
+          applyNamed(event, data)
+          continue
+        }
         let chunk: CompletionChunk
         try {
           chunk = JSON.parse(data) as CompletionChunk
@@ -311,9 +409,11 @@ async function streamTurn(
     }
 
     chunker.flush()
+    serverTools.closeAll()
     return { text, paragraphs: chunker.paragraphs, toolCalls: toolCalls.finish() }
   } catch (err) {
     chunker.abandon()
+    serverTools.closeAll()
     if (options.signal?.aborted) throw new LlmAbortedError()
     if (stalled) throw new Error(`LLM stalled: nothing received for ${Math.round(stallTimeoutMs / 1000)}s`)
     throw err
@@ -412,7 +512,7 @@ export function buildMessages(
   }
   while (recent[0]?.role === 'assistant') recent.shift()
 
-  const merged: ChatMessage[] = systemPrompt ? [{ role: 'system', content: systemPrompt }] : []
+  const merged: ChatMessage[] = systemPrompt?.trim() ? [{ role: 'system', content: systemPrompt }] : []
   for (const item of recent) {
     const last = merged.at(-1)
     if (last?.role === item.role) last.content += `\n\n${item.content}`

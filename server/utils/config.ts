@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { createLog } from './log'
+import { oidcShape, refineOidc, resolveOidc } from './oidc-config'
 
 const baseUrl = (name: string) =>
   z.string().url(`${name} must be a valid URL`).transform((url) => url.replace(/\/+$/, ''))
@@ -9,6 +10,15 @@ const schema = z.object({
   LLM_API_KEY: z.string().optional(),
   LLM_MODEL: z.string({ required_error: 'LLM_MODEL is required' }).min(1),
   LLM_SYSTEM_PROMPT: z.string().optional(),
+  /** Sent as `metadata.locale`, for servers that localise their replies. */
+  LLM_LOCALE: z.string().min(1).optional(),
+  /** Sent as the OpenAI `user` field when nobody is signed in. A signed-in user's OIDC `sub` wins. */
+  LLM_USER: z.string().min(1).optional(),
+  /**
+   * `1`: ask the server for its named SSE events (`x-persona-events: 1`), so tools it runs itself
+   * show as they run. Only for a server that knows the header (persona); others ignore it.
+   */
+  LLM_PERSONA_EVENTS: z.enum(['0', '1']).default('0').transform((value) => value === '1'),
   LLM_MAX_TOOL_ITERATIONS: z.coerce.number().int().min(1).default(8),
   STT_BASE_URL: baseUrl('STT_BASE_URL').optional(),
   STT_API_KEY: z.string().optional(),
@@ -22,9 +32,8 @@ const schema = z.object({
   MCP_SERVERS: z.string().optional(),
   DATA_DIR: z.string().min(1).default('./data'),
   WAKE_WORD: z.string().min(1).default('butler'),
-  AUTH_USER: z.string().min(1).optional(),
-  AUTH_PASS: z.string().min(1).optional(),
-})
+  ...oidcShape,
+}).superRefine(refineOidc)
 
 // `FOO=` in an env file means unset, not an empty value.
 const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== ''))
@@ -41,4 +50,5 @@ if (!result.success) {
 }
 
 export const config = result.data
+export const oidc = resolveOidc(config)
 export type Config = typeof config

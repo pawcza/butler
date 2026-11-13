@@ -8,9 +8,16 @@ export class SessionManager {
   /** Thread id; null until the first message opens one, so every session starts clean. */
   private conversationId: string | null = null
   private turn: AbortController | null = null
+  /** The signed-in user's OIDC `sub`, or null when login is off. An opaque id, never a name or email. */
+  private readonly userId: string | null
 
-  constructor(onStateChange: (state: SessionState) => void) {
+  constructor(onStateChange: (state: SessionState) => void, userId?: string) {
     this.onStateChange = onStateChange
+    this.userId = userId ?? null
+  }
+
+  getUserId(): string | null {
+    return this.userId
   }
 
   getConversationId(): string | null {

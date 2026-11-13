@@ -8,11 +8,27 @@ function send(peer: { send: (data: string) => void }, event: ServerEvent): void 
 }
 
 export default defineWebSocketHandler({
+  // Server middleware never sees an upgrade, so the session is checked here, before the socket opens.
+  upgrade(request) {
+    if (!oidc) return
+    const origin = request.headers.get('origin')
+    if (origin !== null && origin !== oidc.origin) {
+      log.warn('rejected upgrade from origin:', origin)
+      return new Response('Forbidden', { status: 403 })
+    }
+    if (!sessionFromCookieHeader(request.headers.get('cookie'), oidc.sessionSecret)) {
+      log.warn('rejected upgrade without a session')
+      return new Response('Unauthorized', { status: 401 })
+    }
+  },
+
   open(peer) {
     log.info('peer opened:', peer.id)
+    // The upgrade guard already let this socket in, so the cookie is valid: read who it is for.
+    const user = oidc ? sessionFromCookieHeader(peer.request.headers.get('cookie'), oidc.sessionSecret) : null
     const session = new SessionManager((state) => {
       send(peer, { type: 'state', state })
-    })
+    }, user?.sub)
     sessions.set(peer.id, session)
     send(peer, { type: 'state', state: session.getState() })
   },

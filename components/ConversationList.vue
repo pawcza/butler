@@ -21,6 +21,7 @@ const items = ref<ConversationSummary[]>([])
 const hasMore = ref(false)
 const loading = ref(false)
 const loadError = ref<string | null>(null)
+const me = ref<{ enabled: boolean; name: string | null } | null>(null)
 
 async function load(more = false): Promise<void> {
   loading.value = true
@@ -40,7 +41,13 @@ async function load(more = false): Promise<void> {
 }
 
 watch(isOpen, (open) => {
-  if (open) void load()
+  if (!open) return
+  void load()
+  if (!me.value) {
+    $fetch<{ enabled: boolean; name: string | null }>('/api/me')
+      .then((data) => { me.value = data })
+      .catch(() => {})
+  }
 })
 
 function startNew(): void {
@@ -122,9 +129,9 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeyDown, true))
         class="absolute right-0 top-full mt-2 z-50 w-80 max-w-[calc(100vw-2rem)] max-h-[520px] flex flex-col rounded-xl backdrop-blur-2xl bg-white/10 border border-white/20 shadow-[0_8px_32px_rgba(255,255,255,0.08)] overflow-hidden"
       >
         <div class="shrink-0 flex items-center justify-between px-3 pt-3 pb-2">
-          <span class="text-[10px] font-mono tracking-[0.2em] uppercase text-white/40">Conversations</span>
+          <span class="text-[10px] font-mono tracking-[0.2em] uppercase text-white/60">Conversations</span>
           <button
-            class="min-h-[32px] px-3 text-[10px] font-mono tracking-widest uppercase rounded-full border border-ap-orange/40 text-ap-orange hover:bg-ap-orange/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-1 focus:ring-ap-orange/40"
+            class="min-h-[32px] px-3 text-[10px] font-mono tracking-widest uppercase rounded-full border border-white/30 text-gray-100 hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-1 focus:ring-white/30"
             :disabled="disabled"
             @click="startNew"
           >
@@ -136,7 +143,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeyDown, true))
           <p v-if="loadError" class="px-2 py-3 text-[11px] font-mono text-ap-red">{{ loadError }}</p>
           <p
             v-else-if="!loading && items.length === 0"
-            class="px-2 py-6 text-center text-[10px] font-mono tracking-wider uppercase text-white/30"
+            class="px-2 py-6 text-center text-[10px] font-mono tracking-wider uppercase text-white/60"
           >
             No conversations yet
           </p>
@@ -149,10 +156,10 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeyDown, true))
                 @click="pick(conv.id)"
               >
                 <span class="block truncate text-xs font-mono">{{ conv.title ?? 'Untitled' }}</span>
-                <span class="block text-[10px] font-mono text-white/40">{{ ago(conv.lastMessageAt) }} · {{ conv.messageCount }} msg</span>
+                <span class="block text-[10px] font-mono text-white/60">{{ ago(conv.lastMessageAt) }} · {{ conv.messageCount }} msg</span>
               </button>
               <button
-                class="shrink-0 w-9 rounded-lg text-white/30 hover:text-ap-red hover:bg-white/10 transition-colors focus:outline-none focus:ring-1 focus:ring-white/30"
+                class="shrink-0 w-9 rounded-lg text-white/50 hover:text-ap-red hover:bg-white/10 transition-colors focus:outline-none focus:ring-1 focus:ring-white/30"
                 :aria-label="`Delete ${conv.title ?? 'conversation'}`"
                 @click="remove(conv)"
               >
@@ -162,12 +169,25 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeyDown, true))
           </ul>
           <button
             v-if="hasMore"
-            class="w-full mt-1 min-h-[36px] text-[10px] font-mono tracking-widest uppercase text-white/50 hover:text-white rounded-lg hover:bg-white/5 transition-colors disabled:opacity-40"
+            class="w-full mt-1 min-h-[36px] text-[10px] font-mono tracking-widest uppercase text-white/70 hover:text-white rounded-lg hover:bg-white/5 transition-colors disabled:opacity-40"
             :disabled="loading"
             @click="load(true)"
           >
             {{ loading ? 'Loading…' : 'Older' }}
           </button>
+        </div>
+
+        <div
+          v-if="me?.enabled"
+          class="shrink-0 flex items-center justify-between gap-2 px-3 py-2 border-t border-white/10"
+        >
+          <span class="min-w-0 truncate text-[10px] font-mono text-white/60">{{ me.name }}</span>
+          <a
+            href="/auth/logout"
+            class="shrink-0 text-[10px] font-mono tracking-widest uppercase text-white/70 hover:text-white transition-colors focus:outline-none focus:ring-1 focus:ring-white/30 rounded"
+          >
+            Sign out
+          </a>
         </div>
       </div>
     </Transition>

@@ -132,6 +132,7 @@ export async function processCommand(
   const messages = buildMessages(thread?.items ?? [], userText, config.LLM_SYSTEM_PROMPT)
   const userKept = keep('user', userText)
   const signal = session.beginTurn()
+  const user = session.getUserId() ?? config.LLM_USER
 
   emit({ type: 'response_start' })
 
@@ -165,6 +166,9 @@ export async function processCommand(
       tools: mcpToolbox,
       maxToolIterations: config.LLM_MAX_TOOL_ITERATIONS,
       signal,
+      ...(user ? { user } : {}),
+      ...(config.LLM_LOCALE ? { locale: config.LLM_LOCALE } : {}),
+      ...(config.LLM_PERSONA_EVENTS ? { personaEvents: true } : {}),
     })
     finalMessage = result.finalMessage.trim()
   } catch (err) {
