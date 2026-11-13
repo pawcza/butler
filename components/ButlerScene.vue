@@ -214,21 +214,20 @@ const shapeLineOpacity = { value: ap.shapeLineOpacity }
 const homeLineMat = makeLineMaterial(0, HOME_LINK_FADE, looseLineOpacity)
 const shapeLineMat = makeLineMaterial(1, SHAPE_LINK_FADE, shapeLineOpacity)
 
-// ---------- Camera orbit ----------
+// ---------- Camera ----------
+// Still: the drifting points are motion enough. It sits a little off-axis and above, so the
+// condensed shapes read as 3D rather than flat.
 const cameraRef = shallowRef<PerspectiveCamera | null>(null)
-const ORBIT_RADIUS = 6
-const ORBIT_ELEVATION = 0
-const SHAPE_YAW = 0.55   // when condensed the camera sits a little off-axis, so shapes read as 3D
-const SHAPE_RISE = 1.8
-const ORBIT_SPEED_MAP: Record<string, number> = {
-  IDLE: 0.03,
-  LISTENING: 0.04,
-  THINKING: 0.05,
-  SPEAKING: 0.04,
-}
-let orbitAngle = 0
-let orbitSpeed = 0.005
+const CAMERA_DISTANCE = 6
+const CAMERA_YAW = 0.55
+const CAMERA_RISE = 1.8
+const CAMERA_POSITION: [number, number, number] = [
+  Math.sin(CAMERA_YAW) * CAMERA_DISTANCE,
+  CAMERA_RISE,
+  Math.cos(CAMERA_YAW) * CAMERA_DISTANCE,
+]
 const lookTarget = new Vector3(0, 0, 0)
+watch(cameraRef, (cam) => cam?.lookAt(lookTarget))
 
 // ---------- Render loop ----------
 let elapsed = 0
@@ -272,33 +271,11 @@ onBeforeRender(({ delta }) => {
   particleMat.uniforms['u_particleBrightness']!.value = ap.particleBrightness + smoothedEnergy * 0.2
   looseLineOpacity.value = ap.looseLineOpacity
   shapeLineOpacity.value = ap.shapeLineOpacity + smoothedEnergy * 0.15
-
-  // --- Camera orbit ---
-  // When a shape is condensed, snap camera to front view (z-axis) so shapes
-  // aren't seen edge-on. When galaxy mode, orbit freely.
-  const cam = cameraRef.value
-  if (cam) {
-    const targetSpeed = ORBIT_SPEED_MAP[props.activeState] ?? 0.06
-    orbitSpeed += (targetSpeed - orbitSpeed) * (1 - Math.exp(-4 * dt))
-    orbitAngle += orbitSpeed * dt
-
-    // Compute front-facing angle: nearest multiple of 2π (camera at z-axis)
-    const frontAngle = Math.round(orbitAngle / (Math.PI * 2)) * Math.PI * 2
-    // Blend toward front when condensed, free orbit when galaxy
-    const condenseBlend = ap.condense * ap.condense // ease-in
-    const effectiveAngle = orbitAngle + (frontAngle - orbitAngle) * condenseBlend
-      + condenseBlend * (SHAPE_YAW + 0.12 * Math.sin(elapsed * 0.4))
-
-    cam.position.x = Math.sin(effectiveAngle) * ORBIT_RADIUS
-    cam.position.z = Math.cos(effectiveAngle) * ORBIT_RADIUS
-    cam.position.y = ORBIT_ELEVATION * ORBIT_RADIUS + condenseBlend * SHAPE_RISE
-    cam.lookAt(lookTarget)
-  }
 })
 </script>
 
 <template>
-  <TresPerspectiveCamera ref="cameraRef" :position="[0, 0, 6]" :fov="45" />
+  <TresPerspectiveCamera ref="cameraRef" :position="CAMERA_POSITION" :fov="45" />
 
   <TresLineSegments :geometry="homeLines.geometry" :material="homeLineMat" :frustum-culled="false" :render-order="0" />
   <TresLineSegments :geometry="shapeLines.geometry" :material="shapeLineMat" :frustum-culled="false" :render-order="1" />
