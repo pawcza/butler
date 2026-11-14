@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ServerEvent } from '../shared/types'
-import { createSpeechQueue, WARMING_LABEL } from '../server/utils/speech-queue'
+import { createSpeechQueue, SpeechEngineDownError, WARMING_LABEL } from '../server/utils/speech-queue'
 
 interface Call {
   text: string
@@ -11,7 +11,7 @@ interface Call {
 }
 
 /** A synthesizer whose calls stay pending until the test settles them. Honours abort like fetch. */
-function setup(options: { concurrency?: number; signal?: AbortSignal } = {}) {
+function setup(options: { concurrency?: number; signal?: AbortSignal; onGiveUp?: () => void } = {}) {
   const calls: Call[] = []
   const events: ServerEvent[] = []
   const queue = createSpeechQueue<string>({
@@ -112,12 +112,130 @@ describe('createSpeechQueue', () => {
     queue.speak('msg.1', THREE, 'v')
     calls[0]?.reject(new Error('boom'))
     await flush()
-    calls[1]?.reject(new Error('boom again'))
+    calls[1]?.resolve('two')
     await flush()
     calls[2]?.resolve('three')
     await flush()
     expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'TTS failed: boom' }])
-    expect(audio(events).map(decode)).toEqual(['three'])
+    expect(audio(events).map(decode)).toEqual(['two', 'three'])
+  })
+
+  describe('a failing engine', () => {
+    const FOUR = `${THREE} The fourth sentence is the last.`
+
+    it('after a connection error drops the rest of the turn at once, with the one error shown', async () => {
+      const onGiveUp = vi.fn()
+      const { queue, calls, events } = setup({ concurrency: 2, onGiveUp })
+      queue.speak('msg.1', FOUR, 'v')
+      expect(calls).toHaveLength(2)
+      calls[0]?.reject(new SpeechEngineDownError('TTS unreachable: fetch failed (ECONNREFUSED)'))
+      await flush()
+      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'TTS failed: TTS unreachable: fetch failed (ECONNREFUSED)' }])
+      expect(onGiveUp).toHaveBeenCalledOnce()
+      // the request in flight was cancelled, the later sentences are never attempted, and nothing is spoken
+      expect(calls[1]?.signal.aborted).toBe(true)
+      expect(calls).toHaveLength(2)
+      queue.speak('msg.2', 'Another block that arrives later.', 'v')
+      await flush()
+      expect(calls).toHaveLength(2)
+      expect(audio(events)).toHaveLength(0)
+      expect(queue.stopped).toBe(true)
+      await queue.drained()
+    })
+
+    it('after a timeout does the same, even when an earlier sentence was spoken', async () => {
+      const { queue, calls, events } = setup({ concurrency: 1 })
+      queue.speak('msg.1', FOUR, 'v')
+      calls[0]?.resolve('one')
+      await flush()
+      calls[1]?.reject(new SpeechEngineDownError('TTS request timed out after 60s'))
+      await flush()
+      expect(audio(events).map(decode)).toEqual(['one'])
+      expect(events.filter((e) => e.type === 'error')).toHaveLength(1)
+      expect(calls).toHaveLength(2)
+    })
+
+    it('after two failures of any kind gives up, showing only the first error', async () => {
+      const onGiveUp = vi.fn()
+      const { queue, calls, events } = setup({ concurrency: 1, onGiveUp })
+      queue.speak('msg.1', FOUR, 'v')
+      calls[0]?.reject(new Error('TTS 500: first'))
+      await flush()
+      expect(onGiveUp).not.toHaveBeenCalled()
+      calls[1]?.reject(new Error('TTS 500: second'))
+      await flush()
+      expect(onGiveUp).toHaveBeenCalledOnce()
+      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'TTS failed: TTS 500: first' }])
+      expect(calls).toHaveLength(2)
+    })
+
+    it('counts a failure the moment it happens, even behind the head, and the head still plays', async () => {
+      const { queue, calls, events } = setup({ concurrency: 2 })
+      queue.speak('msg.1', THREE, 'v')
+      calls[1]?.reject(new Error('later one'))
+      await flush()
+      expect(events.filter((e) => e.type === 'error')).toEqual([{ type: 'error', message: 'TTS failed: later one' }])
+      calls[0]?.resolve('one')
+      await flush()
+      expect(audio(events).map(decode)).toEqual(['one'])
+    })
+
+    it('a dead engine answering behind the head stops further requests at once', async () => {
+      const { queue, calls } = setup({ concurrency: 2 })
+      queue.speak('msg.1', THREE, 'v')
+      calls[1]?.reject(new SpeechEngineDownError('down'))
+      await flush()
+      expect(queue.stopped).toBe(true)
+      expect(calls).toHaveLength(2)
+    })
+
+    it('the next turn is a new queue and tries again', async () => {
+      const first = setup()
+      first.queue.speak('msg.1', TWO, 'v')
+      first.calls[0]?.reject(new SpeechEngineDownError('down'))
+      await flush()
+      expect(first.queue.stopped).toBe(true)
+      const second = setup()
+      second.queue.speak('msg.1', TWO, 'v')
+      expect(second.calls).toHaveLength(2)
+      second.calls[0]?.resolve('one')
+      await flush()
+      expect(audio(second.events).map(decode)).toEqual(['one'])
+    })
+  })
+
+  describe('markdown and long first sentences', () => {
+    it('sends the words to the engine and keeps the ranges on the displayed text', async () => {
+      const { queue, calls, events } = setup()
+      const text = '**Good** evening, see [the docs](https://example.com/a_b) now. `ls` _lists_ files here.'
+      queue.speak('msg.1', text, 'v')
+      expect(calls.map((c) => c.text)).toEqual(['Good evening, see the docs now.', 'ls lists files here.'])
+      calls[0]?.resolve('x')
+      await flush()
+      calls[1]?.resolve('y')
+      await flush()
+      const ends = audio(events).map((e) => (e.type === 'audio' ? e.block : null))
+      expect(ends).toEqual([{ id: 'msg.1', start: 0, end: text.indexOf(' `ls`') }, { id: 'msg.1', start: text.indexOf('`ls`'), end: text.length }])
+    })
+
+    it('splits only the first sentence of the turn, at a clause boundary near the middle', async () => {
+      const { queue, calls } = setup({ concurrency: 4 })
+      const long = 'This is the very first sentence of the whole reply, and it keeps going for quite a while longer than anyone would like.'
+      queue.speak('msg.1', long, 'v')
+      expect(calls.map((c) => c.text)).toEqual([
+        'This is the very first sentence of the whole reply,',
+        'and it keeps going for quite a while longer than anyone would like.',
+      ])
+      queue.speak('msg.2', long, 'v')
+      expect(calls).toHaveLength(3)
+      expect(calls[2]?.text).toBe(long)
+    })
+
+    it('drops a sentence that is only markup', async () => {
+      const { queue, calls } = setup()
+      queue.speak('msg.1', '---', 'v')
+      expect(calls).toHaveLength(0)
+    })
   })
 
   describe('stop', () => {
@@ -173,7 +291,7 @@ describe('createSpeechQueue', () => {
     beforeEach(() => { vi.useFakeTimers() })
     afterEach(() => { vi.useRealTimers() })
 
-    const blocks = (events: ServerEvent[]) => events.filter((e) => e.type === 'block_start' || e.type === 'block_end')
+    const blocks = (events: ServerEvent[]) => events.filter((e) => e.type === 'block_start' || e.type === 'block_end' || e.type === 'block_remove')
 
     it('shows a tool-style bubble after 2 s and closes it when the audio arrives', async () => {
       const { queue, calls, events } = setup()
@@ -186,8 +304,8 @@ describe('createSpeechQueue', () => {
       ])
       calls[0]?.resolve('audio')
       await vi.advanceTimersByTimeAsync(0)
-      expect(events.slice(-2).map((e) => e.type)).toEqual(['block_end', 'audio'])
-      expect(blocks(events).at(-1)).toEqual({ type: 'block_end', blockId: 'speech-warming-1', text: '' })
+      expect(events.slice(-2).map((e) => e.type)).toEqual(['block_remove', 'audio'])
+      expect(blocks(events).at(-1)).toEqual({ type: 'block_remove', blockId: 'speech-warming-1' })
     })
 
     it('shows nothing when the audio comes in time', async () => {
@@ -216,7 +334,7 @@ describe('createSpeechQueue', () => {
       queue.speak('msg.1', 'One sentence that takes a while.', 'v')
       await vi.advanceTimersByTimeAsync(2500)
       queue.stop()
-      expect(blocks(events).map((e) => e.type)).toEqual(['block_start', 'block_end'])
+      expect(blocks(events).map((e) => e.type)).toEqual(['block_start', 'block_remove'])
       await vi.advanceTimersByTimeAsync(10_000)
       expect(blocks(events)).toHaveLength(2)
     })

@@ -1,5 +1,5 @@
 import { ref, shallowRef } from 'vue'
-import { estimateWordTimings, wordIndexAt } from '~/shared/speech'
+import { estimateWordTimings, wordIndexAt, type WordTiming } from '~/shared/speech'
 
 /** One spoken sentence from the server. `block` says what it reads, for the highlight. */
 export interface SpeechClip {
@@ -43,18 +43,47 @@ function decodeBase64(base64: string): ArrayBuffer {
   return bytes.buffer
 }
 
+/** One clip handed to the audio clock: when it starts and ends, and how its words fall. */
+interface Scheduled {
+  source: AudioBufferSourceNode
+  block: SpeechClip['block']
+  /** AudioContext time the clip starts and ends. */
+  startsAt: number
+  endsAt: number
+  timings: WordTiming[]
+  /** The word last marked, so the highlight only changes when the word does. */
+  shown: number
+  /** The clip is over: its block is marked spoken. */
+  retired: boolean
+}
+
+/** A clip waiting its turn, already being decoded. */
+interface Pending {
+  clip: SpeechClip
+  decoded: Promise<AudioBuffer | null>
+}
+
 /**
- * Plays the server's clips one after another, and can pause, resume and stop them. While a clip plays
- * it follows the words: no engine here reports word times, so they are estimated from the clip's
- * decoded length (see `estimateWordTimings`).
+ * Plays the server's clips one after another, and can pause, resume and stop them. Clips are
+ * decoded as soon as they arrive and scheduled on the AudioContext clock, each starting where the
+ * one before it ends, so a clip that is ready in time follows the last one with no gap, however slow
+ * the device is at running timers and events. While they play it follows the words: no engine here
+ * reports word times, so they are estimated from the clip's decoded length (see `estimateWordTimings`).
  */
 export function createSpeechPlayer(options: SpeechPlayerOptions) {
   let ctx: AudioContext | null = null
   let gain: GainNode | null = null
-  const queue: SpeechClip[] = []
+  let analyser: AnalyserNode | null = null
+  let bins = new Uint8Array(0)
+  const queue: Pending[] = []
+  /** Clips on the audio clock, in order: playing now or waiting for their time. */
+  let scheduled: Scheduled[] = []
+  /** AudioContext time at which the last scheduled clip ends. */
+  let scheduledEnd = 0
   /** Bumped by `stop`, so a loop that is still waiting on a clip knows it has been cut off. */
   let generation = 0
-  let running = false
+  /** The loop that decodes and schedules is running. */
+  let scheduling = false
   /** After a stop, clips already on their way from the server are ignored until `accept`. */
   let refusing = false
   /**
@@ -64,7 +93,6 @@ export function createSpeechPlayer(options: SpeechPlayerOptions) {
   let blocked = false
   /** Releases the wait for a gesture. */
   let releaseGesture: (() => void) | null = null
-  let current: { source: AudioBufferSourceNode; finish: () => void } | null = null
   let frame = 0
 
   /** Clips are playing, paused or waiting. */
@@ -72,13 +100,19 @@ export function createSpeechPlayer(options: SpeechPlayerOptions) {
   const paused = ref(false)
   const progress = shallowRef<SpeechProgress | null>(null)
 
-  function output(audio: AudioContext): GainNode {
-    if (!gain || gain.context !== audio) {
+  function output(audio: AudioContext): AnalyserNode {
+    if (!gain || !analyser || gain.context !== audio) {
       gain = audio.createGain()
       gain.connect(audio.destination)
+      // source → analyser → gain → destination
+      // The analyser sits before the gain so the visualisation doesn't depend on the volume.
+      analyser = audio.createAnalyser()
+      analyser.fftSize = 256
+      analyser.connect(gain)
+      bins = new Uint8Array(analyser.frequencyBinCount)
     }
     gain.gain.value = options.volume()
-    return gain
+    return analyser
   }
 
   function markWord(blockId: string, start: number, end: number): void {
@@ -133,79 +167,104 @@ export function createSpeechPlayer(options: SpeechPlayerOptions) {
     }
   }
 
-  function playClip(clip: SpeechClip, gen: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      try {
-        ctx ??= new AudioContext()
-        const audio = ctx
-        audio.decodeAudioData(decodeBase64(clip.data)).then(async (decoded) => {
-          if (gen !== generation || !(await ready(audio, gen))) { resolve(); return }
-          const source = audio.createBufferSource()
-          source.buffer = decoded
-
-          // source → analyser → gain → destination
-          // The analyser sits before the gain so the visualisation doesn't depend on the volume.
-          const analyser = audio.createAnalyser()
-          analyser.fftSize = 256
-          source.connect(analyser)
-          analyser.connect(output(audio))
-
-          const { block } = clip
-          const text = block ? options.textOf(block.id) : undefined
-          const timings = block && text !== undefined ? estimateWordTimings(text, block, decoded.duration) : []
-          const startedAt = audio.currentTime
-          let shown = -2
-          const bins = new Uint8Array(analyser.frequencyBinCount)
-          const tick = (): void => {
-            analyser.getByteFrequencyData(bins)
-            let sum = 0
-            for (const v of bins) sum += v * v
-            options.onEnergy(Math.sqrt(sum / bins.length) / 128)
-            if (block && timings.length > 0) {
-              // a suspended context stops its clock, so a pause holds the word too
-              const index = wordIndexAt(timings, audio.currentTime - startedAt)
-              const word = timings[index]
-              if (index !== shown && word) {
-                shown = index
-                markWord(block.id, word.start, word.end)
-              }
-            }
-            frame = requestAnimationFrame(tick)
-          }
-          tick()
-
-          const finish = (): void => {
-            cancelAnimationFrame(frame)
-            current = null
-            resolve()
-          }
-          current = { source, finish }
-          source.onended = () => {
-            if (block) markSpoken(block.id, block.end)
-            finish()
-          }
-          source.start()
-        }).catch(() => resolve())
-      } catch {
-        resolve()
-      }
-    })
+  /** The clip is over: its sentence counts as read. */
+  function retire(item: Scheduled): void {
+    if (item.retired) return
+    item.retired = true
+    if (item.block) markSpoken(item.block.id, item.block.end)
   }
 
-  async function run(): Promise<void> {
-    running = true
-    const gen = generation
-    while (gen === generation) {
-      const clip = queue.shift()
-      if (!clip) break
-      await playClip(clip, gen)
+  /** Every frame while clips are scheduled: the loudness, and the word the audio clock is at. */
+  function tick(): void {
+    if (!ctx || !analyser || scheduled.length === 0) return
+    analyser.getByteFrequencyData(bins)
+    let sum = 0
+    for (const v of bins) sum += v * v
+    options.onEnergy(Math.sqrt(sum / bins.length) / 128)
+
+    // a suspended context stops its clock, so a pause holds the word too
+    const now = ctx.currentTime
+    const playing = scheduled.find((item) => now < item.endsAt)
+    for (const item of scheduled) {
+      if (item === playing) break
+      retire(item)
     }
-    // a stop took over: it has reset everything already
-    if (gen !== generation) return
-    running = false
+    if (playing && playing.block && playing.timings.length > 0 && now >= playing.startsAt) {
+      const index = wordIndexAt(playing.timings, now - playing.startsAt)
+      const word = playing.timings[index]
+      if (index !== playing.shown && word) {
+        playing.shown = index
+        markWord(playing.block.id, word.start, word.end)
+      }
+    }
+    frame = requestAnimationFrame(tick)
+  }
+
+  /** Nothing is playing, scheduled or waiting: the queue ran dry. */
+  function finishIfDry(gen: number): void {
+    if (gen !== generation || scheduling || queue.length > 0 || scheduled.length > 0) return
+    cancelAnimationFrame(frame)
     active.value = false
     options.onEnergy(0)
     options.onIdle()
+  }
+
+  /** Puts a decoded clip on the audio clock, right after the one before it. */
+  function schedule(audio: AudioContext, clip: SpeechClip, decoded: AudioBuffer, gen: number): void {
+    const source = audio.createBufferSource()
+    source.buffer = decoded
+    source.connect(output(audio))
+
+    const text = clip.block ? options.textOf(clip.block.id) : undefined
+    const timings = clip.block && text !== undefined ? estimateWordTimings(text, clip.block, decoded.duration) : []
+    // a clip that arrives late starts now; one that arrives in time starts exactly where the last ends
+    const startsAt = Math.max(scheduledEnd, audio.currentTime)
+    const item: Scheduled = { source, block: clip.block, startsAt, endsAt: startsAt + decoded.duration, timings, shown: -2, retired: false }
+    scheduledEnd = item.endsAt
+    if (scheduled.length === 0) {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(tick)
+    }
+    scheduled.push(item)
+    source.onended = () => {
+      if (gen !== generation) return
+      retire(item)
+      scheduled = scheduled.filter((other) => other !== item)
+      finishIfDry(gen)
+    }
+    source.start(startsAt)
+  }
+
+  /** Decodes clips as they arrive, in parallel, and schedules them in order. */
+  async function run(): Promise<void> {
+    scheduling = true
+    const gen = generation
+    while (gen === generation) {
+      const next = queue.shift()
+      if (!next) break
+      const decoded = await next.decoded
+      if (gen !== generation) return
+      if (!decoded || !ctx) continue
+      if (!(await ready(ctx, gen))) return
+      try {
+        schedule(ctx, next.clip, decoded, gen)
+      } catch {
+        // a clip that can't be played is skipped
+      }
+    }
+    // a stop took over: it has reset everything already
+    if (gen !== generation) return
+    scheduling = false
+    finishIfDry(gen)
+  }
+
+  function decode(clip: SpeechClip): Promise<AudioBuffer | null> {
+    try {
+      ctx ??= new AudioContext()
+      return ctx.decodeAudioData(decodeBase64(clip.data)).catch(() => null)
+    } catch {
+      return Promise.resolve(null)
+    }
   }
 
   return {
@@ -216,25 +275,25 @@ export function createSpeechPlayer(options: SpeechPlayerOptions) {
     /** Queues a clip, unless speech was stopped and the next turn hasn't begun. */
     enqueue(clip: SpeechClip): void {
       if (refusing) return
-      queue.push(clip)
+      queue.push({ clip, decoded: decode(clip) })
       if (!blocked) active.value = true
-      if (!running) void run()
+      if (!scheduling) void run()
     },
 
     /** Silences everything now and drops the queue. Later clips are ignored until `accept`. */
     stop(): void {
       refusing = true
       generation += 1
-      running = false
+      scheduling = false
       queue.length = 0
       blocked = false
       releaseGesture?.()
-      const playing = current
-      current = null
-      if (playing) {
-        playing.source.onended = null
-        try { playing.source.stop() } catch { /* already ended */ }
-        playing.finish()
+      const playing = scheduled
+      scheduled = []
+      scheduledEnd = 0
+      for (const item of playing) {
+        item.source.onended = null
+        try { item.source.stop() } catch { /* already ended */ }
       }
       cancelAnimationFrame(frame)
       options.onEnergy(0)

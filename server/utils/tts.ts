@@ -1,5 +1,6 @@
 import { config } from './config'
 import { createLog } from './log'
+import { SpeechEngineDownError } from './speech-queue'
 import { createWarmup } from './tts-warmup'
 
 export interface TtsOptions {
@@ -12,6 +13,9 @@ const log = createLog('tts')
 /** The first sentence of a slow engine can take a model load: 15 to 20 seconds. */
 const SYNTH_TIMEOUT_MS = 60_000
 const WARMUP_WORD = 'Ready'
+
+/** The engine answered, with an error status. */
+class TtsStatusError extends Error {}
 
 /** The voice a text is read in: the one for its language when `TTS_VOICES` has one, else the default. */
 export function voiceFor(language: string | null): TtsOptions {
@@ -43,14 +47,18 @@ export async function synthesize(text: string, opts: TtsOptions = voiceFor(null)
     })
     if (!response.ok) {
       const errBody = await response.text().catch(() => '(no body)')
-      throw new Error(`TTS ${response.status}: ${errBody}`)
+      throw new TtsStatusError(`TTS ${response.status}: ${errBody}`)
     }
     const audio = Buffer.from(await response.arrayBuffer())
     warmup.touch()
     return audio
   } catch (err) {
-    if (timeout.aborted && !signal?.aborted) throw new Error(`TTS request timed out after ${SYNTH_TIMEOUT_MS / 1000}s`)
-    throw err
+    if (signal?.aborted) throw err
+    if (timeout.aborted) throw new SpeechEngineDownError(`TTS request timed out after ${SYNTH_TIMEOUT_MS / 1000}s`)
+    if (err instanceof TtsStatusError) throw err
+    // no answer at all: refused, reset, unresolvable, or cut off mid-body
+    const code = (err instanceof Error ? err.cause : null) as { code?: string } | null
+    throw new SpeechEngineDownError(`TTS unreachable: ${err instanceof Error ? err.message : err}${code?.code ? ` (${code.code})` : ''}`, { cause: err })
   }
 }
 

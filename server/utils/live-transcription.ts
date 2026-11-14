@@ -1,3 +1,5 @@
+import { MAX_CAPTURE_SECONDS } from '~/shared/audio'
+
 /** Transcribes 16 kHz mono PCM. Must give up when `signal` fires. */
 export type Transcriber = (pcm: Int16Array, signal: AbortSignal) => Promise<string>
 
@@ -56,7 +58,7 @@ export class LiveTranscription {
     this.minPartialSamples = Math.round(((options.minPartialMs ?? 1000) * this.sampleRate) / 1000)
     this.stepSamples = Math.round(((options.partialStepMs ?? 500) * this.sampleRate) / 1000)
     this.maxPartialSamples = Math.round(((options.maxPartialMs ?? 30_000) * this.sampleRate) / 1000)
-    this.pcm = new Int16Array(Math.round(((options.maxMs ?? 60_000) * this.sampleRate) / 1000))
+    this.pcm = new Int16Array(Math.round(((options.maxMs ?? MAX_CAPTURE_SECONDS * 1000) * this.sampleRate) / 1000))
   }
 
   get durationMs(): number {

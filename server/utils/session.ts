@@ -16,6 +16,8 @@ export class SessionManager {
   private stopSpeechOfTurn: (() => void) | null = null
   /** The model has finished: only the speech is left of the turn. */
   private speechOnly = false
+  /** A turn has begun and not ended: the model is working, or only its speech is left. */
+  private turnRunning = false
   private closed = false
   private readonly closeHooks = new Set<() => void>()
   /** The signed-in user's OIDC `sub`, or null when login is off. An opaque id, never a name or email. */
@@ -71,6 +73,7 @@ export class SessionManager {
     this.turnId += 1
     this.stopSpeechOfTurn = null
     this.speechOnly = false
+    this.turnRunning = true
     return { id: this.turnId, signal: this.turn.signal }
   }
 
@@ -98,16 +101,29 @@ export class SessionManager {
     if (this.state === 'SPEAKING' && !this.speechOnly) this.setState('THINKING')
   }
 
-  /** A new capture may open when idle, or when only speech is left of the turn (barge-in). */
-  canCapture(): boolean {
-    return this.state === 'IDLE' || (this.state === 'SPEAKING' && this.speechOnly)
+  /** The model is still working on the running turn: neither done nor only speaking. */
+  private get modelWorking(): boolean {
+    return this.turnRunning && !this.speechOnly
   }
 
-  /** Ends the speech-only rest of a turn right now, so a new capture can take over. */
+  /**
+   * A new capture may open when idle, when only speech is left of the turn (barge-in), or while
+   * the model is still working (the capture interrupts the turn).
+   */
+  canCapture(): boolean {
+    return this.state === 'IDLE' || (this.state === 'SPEAKING' && this.speechOnly) || this.modelWorking
+  }
+
+  /**
+   * Ends the running turn right now, so a new capture can take over: its speech is stopped, and if
+   * the model is still working its request and any tool wait are aborted through the turn's signal.
+   */
   supersedeTurn(): void {
+    if (this.modelWorking) this.turn?.abort()
     this.stopSpeechOfTurn?.()
     this.turnId += 1
     this.speechOnly = false
+    this.turnRunning = false
     this.setState('IDLE')
   }
 
@@ -115,6 +131,7 @@ export class SessionManager {
   finishTurn(id: number): void {
     if (id !== this.turnId) return
     this.speechOnly = false
+    this.turnRunning = false
     this.setState('IDLE')
   }
 

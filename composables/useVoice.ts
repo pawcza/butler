@@ -1,6 +1,6 @@
 import type { MicVAD } from '@ricky0123/vad-web'
 import type { BlockKind, ConversationThread, ServerEvent, SessionState } from '~/shared/types'
-import { PCM_SAMPLE_RATE, PRE_ROLL_RING_SECONDS, encodeAudioFrame } from '~/shared/audio'
+import { MAX_JSON_FRAME_BYTES, PCM_SAMPLE_RATE, PRE_ROLL_RING_SECONDS, encodeAudioFrame } from '~/shared/audio'
 import { PcmRing } from '~/utils/pcm'
 import { float32ToWav } from '~/utils/wav'
 import { createSpeechPlayer } from '~/utils/speech-player'
@@ -67,7 +67,12 @@ let micGestureCleanup: (() => void) | null = null
 /** The latest seconds of microphone audio as 16 kHz PCM, for pre-roll. */
 const ring = new PcmRing(PCM_SAMPLE_RATE * PRE_ROLL_RING_SECONDS)
 /** Microphone frames are streaming to the server, between `audio_start` and `audio_end`. */
-let capturing = false
+const capturing = ref(false)
+/**
+ * `audio_end` is sent but the server hasn't answered with a state event yet. The server is still
+ * IDLE as far as this client knows, so a capture opened now would be refused as busy.
+ */
+let awaitingServerState = false
 /** The capture is closed but its final transcript hasn't arrived; its partials still count. */
 let awaitingFinal = false
 /** Id of the partial transcript bubble being shown, if any. */
@@ -162,14 +167,24 @@ export function useVoice() {
     ws.onclose = () => {
       isConnected.value = false
       // the server dropped any capture with the socket
-      capturing = false
-      awaitingFinal = false
-      endWakeWindow()
-      if (liveTranscriptId !== null) removeLogItem(liveTranscriptId)
-      liveTranscriptId = null
+      resetCapture()
     }
     ws.onerror = () => { error.value = 'WebSocket connection failed' }
     ws.onmessage = (ev: MessageEvent) => handleMessage(ev)
+  }
+
+  /** The server has no capture of ours: forget everything about it. */
+  function resetCapture(): void {
+    capturing.value = false
+    awaitingFinal = false
+    awaitingServerState = false
+    if (releaseTailTimer !== null) {
+      clearTimeout(releaseTailTimer)
+      releaseTailTimer = null
+    }
+    endWakeWindow()
+    if (liveTranscriptId !== null) removeLogItem(liveTranscriptId)
+    liveTranscriptId = null
   }
 
   function handleMessage(ev: MessageEvent): void {
@@ -184,9 +199,11 @@ export function useVoice() {
       case 'state':
         isProcessingWake.value = false
         serverState = event.state
-        if (event.state !== 'IDLE' && capturing) {
-          // the server closed the capture itself (length limit) and is answering it
-          capturing = false
+        awaitingServerState = false
+        if (event.state === 'LISTENING' && capturing.value) {
+          // the server closed the capture itself (length limit) and is answering it. Other states
+          // can be late news from the turn this capture interrupted.
+          capturing.value = false
           awaitingFinal = true
           endWakeWindow()
         }
@@ -198,7 +215,7 @@ export function useVoice() {
         break
       case 'transcript_partial': {
         // late partials of a cancelled utterance are ignored
-        if (!capturing && !awaitingFinal) break
+        if (!capturing.value && !awaitingFinal) break
         liveTranscriptId = event.id
         const item = findBlock(event.id)
         if (item) item.text = event.text
@@ -251,6 +268,11 @@ export function useVoice() {
         }
         break
       }
+      case 'block_remove': {
+        const at = chatLog.value.findLastIndex((b) => b.id === event.blockId)
+        if (at !== -1) chatLog.value.splice(at, 1)
+        break
+      }
       case 'response_end':
         isStreaming.value = false
         break
@@ -262,6 +284,9 @@ export function useVoice() {
         break
       case 'audio':
         player.enqueue({ data: event.data, format: event.format, ...(event.block ? { block: event.block } : {}) })
+        break
+      case 'capture_refused':
+        resetCapture()
         break
       case 'error':
         error.value = event.message
@@ -345,7 +370,7 @@ export function useVoice() {
   }
 
   function isBusy(): boolean {
-    return capturing || awaitingFinal || player.active.value || state.value !== 'IDLE'
+    return capturing.value || awaitingFinal || player.active.value || state.value !== 'IDLE'
       || isProcessingWake.value || vadPhase === 'active'
   }
 
@@ -353,16 +378,16 @@ export function useVoice() {
   function onMicFrame(pcm: Int16Array): void {
     ring.write(pcm)
     if (isBusy()) lastBusyAt = ring.position
-    if (capturing && ws?.readyState === WebSocket.OPEN) ws.send(encodeAudioFrame(pcm))
+    if (capturing.value && ws?.readyState === WebSocket.OPEN) ws.send(encodeAudioFrame(pcm))
   }
 
   // ── Capture: streaming one utterance to the server ───────────────────────────
 
   /** Starts streaming, beginning with the ring buffer from `from` onwards. */
   function openCapture(from: number): boolean {
-    if (capturing || !ws || ws.readyState !== WebSocket.OPEN) return false
+    if (capturing.value || awaitingServerState || !ws || ws.readyState !== WebSocket.OPEN) return false
     ws.send(JSON.stringify({ type: 'audio_start' }))
-    capturing = true
+    capturing.value = true
     awaitingFinal = false
     const preRoll = ring.readSince(from)
     if (preRoll.length > 0) ws.send(encodeAudioFrame(preRoll))
@@ -376,8 +401,8 @@ export function useVoice() {
       clearTimeout(releaseTailTimer)
       releaseTailTimer = null
     }
-    if (!capturing) return
-    capturing = false
+    if (!capturing.value) return
+    capturing.value = false
     awaitingFinal = !cancel
     if (cancel && liveTranscriptId !== null) {
       removeLogItem(liveTranscriptId)
@@ -385,12 +410,14 @@ export function useVoice() {
     }
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: cancel ? 'audio_cancel' : 'audio_end' }))
+      // the server answers `audio_end` with a state event; until then no new capture may open
+      if (!cancel) awaitingServerState = true
     }
   }
 
   /** Push-to-talk pressed. The first press opens the microphone if passive listening hasn't. */
   async function startTalking(): Promise<void> {
-    if (capturing) {
+    if (capturing.value) {
       // pressed again inside the release tail: the same capture goes on, the tail no longer ends it
       if (releaseTailTimer !== null) {
         clearTimeout(releaseTailTimer)
@@ -398,6 +425,7 @@ export function useVoice() {
       }
       return
     }
+    if (awaitingServerState) return
     playAckSound()
     const gen = ++pressGen
     if (!(await ensureMic())) return
@@ -413,7 +441,7 @@ export function useVoice() {
    */
   function stopTalking(discard = false): void {
     pressGen++
-    if (discard || !capturing) {
+    if (discard || !capturing.value) {
       closeCapture(discard)
       return
     }
@@ -647,10 +675,6 @@ export function useVoice() {
 
   // ── Misc ──────────────────────────────────────────────────────────────────────
 
-  function sendPing(): void {
-    ws?.send(JSON.stringify({ type: 'ping' }))
-  }
-
   function setVolume(v: number): void {
     const clamped = Math.max(0, Math.min(1, v))
     volume.value = clamped
@@ -666,7 +690,12 @@ export function useVoice() {
     if (!trimmed) return false
     if (!ws || ws.readyState !== WebSocket.OPEN) return false
     if (state.value !== 'IDLE') return false
-    ws.send(JSON.stringify({ type: 'command', text: trimmed }))
+    const frame = JSON.stringify({ type: 'command', text: trimmed })
+    if (new TextEncoder().encode(frame).length > MAX_JSON_FRAME_BYTES) {
+      showError('That message is too long to send')
+      return false
+    }
+    ws.send(frame)
     return true
   }
 
@@ -684,6 +713,7 @@ export function useVoice() {
     isPassive,
     isProcessingWake: readonly(isProcessingWake),
     isWakeListening: readonly(isWakeListening),
+    isCapturing: readonly(capturing),
     audioEnergy: readonly(audioEnergy),
     isSpeaking,
     isPlaying: player.active,
@@ -694,7 +724,6 @@ export function useVoice() {
     resumeSpeaking: player.resume,
     startTalking,
     stopTalking,
-    sendPing,
     sendCommand,
     volume: readonly(volume),
     setVolume,

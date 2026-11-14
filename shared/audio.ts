@@ -7,6 +7,18 @@ export const AUDIO_FRAME_MS = 100
 /** Microphone history the client keeps for pre-roll. A capture's first frame may carry all of it. */
 export const PRE_ROLL_RING_SECONDS = 10
 
+/** Longest live capture the server keeps (see `LiveTranscription`). */
+export const MAX_CAPTURE_SECONDS = 60
+
+/** Largest JSON text frame the server reads. A typed command is the longest message by far. */
+export const MAX_JSON_FRAME_BYTES = 4096
+
+/** Size of the WAV header in front of 16-bit PCM (see `float32ToWav`). */
+const WAV_HEADER_BYTES = 44
+
+/** Largest WAV the wake word check accepts: a whole capture's length of audio, plus the header. */
+export const MAX_WAKE_UPLOAD_BYTES = WAV_HEADER_BYTES + PCM_SAMPLE_RATE * MAX_CAPTURE_SECONDS * 2
+
 const frameBytes = (ms: number): number => 1 + ((PCM_SAMPLE_RATE * ms) / 1000) * 2
 
 /** Largest legitimate tagged frame: the first of a capture holds the whole pre-roll ring. */

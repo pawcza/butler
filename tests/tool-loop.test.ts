@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { resolve } from 'node:path'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LlmAbortedError, respond, type BlockHandlers, type RespondOptions, type ToolProvider } from '../server/utils/llm'
 import { McpToolbox, parseMcpConfig, type McpServerConfig } from '../server/utils/mcp'
 import { createFixtureServer } from './support/mcp-fixture'
@@ -178,6 +178,31 @@ describe('tool loop', () => {
     await expect(respond(messages, recorder().handlers, { ...options, tools, signal: controller.signal }))
       .rejects.toBeInstanceOf(LlmAbortedError)
     expect(mock.requests).toHaveLength(1)
+  })
+
+  it('an interrupt during a tool wait aborts it, keeps what was written, and never starts or retries a call', async () => {
+    const controller = new AbortController()
+    let started = 0
+    const tools: ToolProvider = {
+      definitions: () => [{ type: 'function', function: { name: 't', description: '', parameters: {} } }],
+      execute: (_name, _args, signal) => new Promise<string>((_resolve, reject) => {
+        started += 1
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      }),
+    }
+    const calls = [...toolCallFrames('t', '{}', 'call_1').slice(0, -1), ...toolCallFrames('t', '{}', 'call_2').slice(0, -2)]
+    mock.enqueue({ frames: [chunk({ content: 'Checking.\n' }), ...calls, chunk({}, 'tool_calls'), '[DONE]'] })
+    const { blocks, handlers } = recorder()
+    const run = respond(messages, handlers, { ...options, tools, signal: controller.signal })
+    await vi.waitFor(() => expect(started).toBe(1))
+    controller.abort()
+    const error = await run.catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(LlmAbortedError)
+    expect((error as LlmAbortedError).paragraphs).toEqual(['Checking.'])
+    expect(started).toBe(1)
+    expect(mock.requests).toHaveLength(1)
+    // the call that was in flight is shown as ended, not left spinning
+    expect(blocks.filter((b) => b.kind === 'tool_output')).toHaveLength(1)
   })
 
   it('sends no tools field at all when nothing is configured', async () => {

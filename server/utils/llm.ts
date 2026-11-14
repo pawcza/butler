@@ -65,9 +65,13 @@ export interface RespondOptions {
 }
 
 export class LlmAbortedError extends Error {
-  constructor() {
+  /** The message paragraphs the model had finished or begun when it was cut off, in order. */
+  readonly paragraphs: readonly string[]
+
+  constructor(paragraphs: readonly string[] = []) {
     super('LLM request aborted')
     this.name = 'LlmAbortedError'
+    this.paragraphs = paragraphs
   }
 }
 
@@ -416,7 +420,7 @@ async function streamTurn(
   } catch (err) {
     chunker.abandon()
     serverTools.closeAll()
-    if (options.signal?.aborted) throw new LlmAbortedError()
+    if (options.signal?.aborted) throw new LlmAbortedError([...chunker.paragraphs])
     if (stalled) throw new Error(`LLM stalled: nothing received for ${Math.round(stallTimeoutMs / 1000)}s`)
     throw err
   } finally {
@@ -473,15 +477,23 @@ export async function respond(
   for (let iteration = 0; ; iteration++) {
     const tools = iteration < maxIterations ? definitions : []
     log.info(`POST ${options.baseUrl}/chat/completions model=${options.model} messages=${conversation.length} tools=${tools.length}`)
-    const turn = await streamTurn(conversation, tools, handlers, options)
+    let turn: Turn
+    try {
+      turn = await streamTurn(conversation, tools, handlers, options)
+    } catch (err) {
+      // an interrupted turn keeps what earlier model calls of it had already written
+      throw err instanceof LlmAbortedError ? new LlmAbortedError([...paragraphs, ...err.paragraphs]) : err
+    }
     paragraphs.push(...turn.paragraphs)
 
     if (tools.length === 0 || turn.toolCalls.length === 0 || !options.tools) break
 
     conversation.push({ role: 'assistant', content: turn.text, tool_calls: turn.toolCalls })
     for (const call of turn.toolCalls) {
+      // an interrupted turn starts no further tool call
+      if (signal.aborted) throw new LlmAbortedError([...paragraphs])
       const content = await runToolCall(call, options.tools, handlers, signal)
-      if (signal.aborted) throw new LlmAbortedError()
+      if (signal.aborted) throw new LlmAbortedError([...paragraphs])
       conversation.push({ role: 'tool', tool_call_id: call.id, content })
     }
   }

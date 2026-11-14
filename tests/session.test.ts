@@ -55,15 +55,23 @@ describe('SessionManager', () => {
       expect(sm.getState()).toBe('SPEAKING')
     })
 
-    it('takes a new capture when idle, or when only speech is left, but not while the model works', () => {
+    it('takes a new capture when idle, when only speech is left, or while the model works (it interrupts the turn)', () => {
       const sm = new SessionManager(vi.fn())
       expect(sm.canCapture()).toBe(true)
       sm.beginTurn()
+      sm.setState('THINKING')
+      expect(sm.canCapture()).toBe(true)
       sm.setState('SPEAKING')
-      expect(sm.canCapture()).toBe(false)
+      expect(sm.canCapture()).toBe(true)
       sm.markSpeechOnly()
       expect(sm.canCapture()).toBe(true)
       sm.setState('THINKING')
+      expect(sm.canCapture()).toBe(false)
+    })
+
+    it('refuses a capture while no turn runs but the session is busy, as when a final transcript is being made', () => {
+      const sm = new SessionManager(vi.fn())
+      sm.setState('LISTENING')
       expect(sm.canCapture()).toBe(false)
     })
 
@@ -71,9 +79,11 @@ describe('SessionManager', () => {
       const sm = new SessionManager(vi.fn())
       sm.beginTurn()
       sm.markSpeechOnly()
-      sm.beginTurn()
-      sm.setState('SPEAKING')
+      sm.setState('THINKING')
       expect(sm.canCapture()).toBe(false)
+      sm.beginTurn()
+      sm.setState('THINKING')
+      expect(sm.canCapture()).toBe(true)
     })
 
     it('finishing the turn goes idle', () => {
@@ -82,6 +92,30 @@ describe('SessionManager', () => {
       sm.setState('SPEAKING')
       sm.finishTurn(turn.id)
       expect(sm.getState()).toBe('IDLE')
+    })
+
+    it('superseding a turn the model is still working on aborts it; one that only speaks is not aborted', () => {
+      const sm = new SessionManager(vi.fn())
+      const working = sm.beginTurn()
+      sm.setState('THINKING')
+      sm.supersedeTurn()
+      expect(working.signal.aborted).toBe(true)
+      expect(sm.getState()).toBe('IDLE')
+      expect(sm.canCapture()).toBe(true)
+
+      const speaking = sm.beginTurn()
+      sm.setState('SPEAKING')
+      sm.markSpeechOnly()
+      sm.supersedeTurn()
+      expect(speaking.signal.aborted).toBe(false)
+    })
+
+    it('a finished turn is no longer interruptible', () => {
+      const sm = new SessionManager(vi.fn())
+      const turn = sm.beginTurn()
+      sm.finishTurn(turn.id)
+      sm.setState('THINKING')
+      expect(sm.canCapture()).toBe(false)
     })
 
     it('a superseded turn goes idle at once, stops its speech, and its late finish changes nothing', () => {

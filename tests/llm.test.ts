@@ -335,8 +335,10 @@ describe('respond', () => {
       if (text === 'Second') controller.abort()
     }
     const before = mock.disconnects()
-    await expect(respond(messages, handlers, { ...options, signal: controller.signal }))
-      .rejects.toBeInstanceOf(LlmAbortedError)
+    const error = await respond(messages, handlers, { ...options, signal: controller.signal }).catch((err: unknown) => err)
+    expect(error).toBeInstanceOf(LlmAbortedError)
+    // the paragraph that was still open is kept with what had been written of it
+    expect((error as LlmAbortedError).paragraphs).toEqual(['First.', 'Second'])
     expect(spoken()).toEqual(['First.'])
     expect(events.at(-1)?.startsWith('end ')).toBe(true)
     await vi.waitFor(() => expect(mock.disconnects()).toBe(before + 1))

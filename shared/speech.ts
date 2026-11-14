@@ -85,6 +85,116 @@ export function splitSentences(text: string): TextRange[] {
   return merged
 }
 
+/** Stands in for dropped markup while later passes scan the text, so it can't open or close anything. */
+const DROPPED = '\u0000'
+
+/** Polish months in the genitive: "3. maja" is a date, not a list item. */
+const POLISH_MONTH = '(?:stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|września|października|listopada|grudnia)'
+
+/**
+ * Which characters of a block's text are read aloud: `true` for a spoken one, `false` for markdown
+ * syntax (emphasis marks, backticks, the `[` and `](url)` around a link label, list and heading
+ * markers). The text itself is never changed, so offsets into it stay valid.
+ */
+export function spokenMask(text: string): boolean[] {
+  const spoken = new Array<boolean>(text.length).fill(true)
+  let scan = text
+  const drop = (from: number, to: number): void => {
+    for (let i = from; i < to; i++) spoken[i] = false
+    scan = scan.slice(0, from) + DROPPED.repeat(to - from) + scan.slice(to)
+  }
+  /** Drops `open` characters at the start of each match and `close` at its end. */
+  const dropAround = (pattern: RegExp, open: number, close: number): void => {
+    for (const m of [...scan.matchAll(pattern)]) {
+      drop(m.index, m.index + open)
+      drop(m.index + m[0].length - close, m.index + m[0].length)
+    }
+  }
+  const dropWhole = (pattern: RegExp): void => {
+    for (const m of [...scan.matchAll(pattern)]) drop(m.index, m.index + m[0].length)
+  }
+
+  dropWhole(/^[ \t]*(?:`{3,}[^\n`]*|(?:[-*_][ \t]*){3,})$/gm)
+  dropWhole(new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]+|[-*+•][ \\t]+|\\d{1,3}[.)][ \\t]+(?!${POLISH_MONTH})|>[ \\t]*)`, 'gmu'))
+  // [label](url) and ![alt](url): the label stays
+  for (const m of [...scan.matchAll(/(!?)\[([^\]\n]*)\]\(([^)\n]*)\)/g)]) {
+    const labelStart = m.index + (m[1]?.length ?? 0) + 1
+    drop(m.index, labelStart)
+    drop(labelStart + (m[2]?.length ?? 0), m.index + m[0].length)
+  }
+  for (const m of [...scan.matchAll(/(`+)([^`\n]+?)\1(?!`)/g)]) {
+    const mark = m[1]?.length ?? 1
+    drop(m.index, m.index + mark)
+    drop(m.index + m[0].length - mark, m.index + m[0].length)
+  }
+  dropWhole(/`+/g)
+  dropAround(/\*\*(?=\S)[^\n]*?\S\*\*/g, 2, 2)
+  dropAround(/(?<![\p{L}\p{N}_])__(?=\S)[^\n]*?\S__(?![\p{L}\p{N}_])/gu, 2, 2)
+  dropAround(/~~(?=\S)[^\n]*?\S~~/g, 2, 2)
+  // a lone * or _ is emphasis only when it hugs the words, and an underscore only at a word edge: snake_case stays
+  dropAround(/(?<![*\p{L}\p{N}])\*(?=[^\s*])[^\n*]*?[^\s*]\*(?![*\p{L}\p{N}])/gu, 1, 1)
+  dropAround(/(?<![\p{L}\p{N}_])_(?=[^\s_])[^\n_]*?[^\s_]_(?![\p{L}\p{N}_])/gu, 1, 1)
+  return spoken
+}
+
+/** What the speech engine is given for `range` of `text`: its spoken characters, whitespace collapsed. */
+export function spokenText(text: string, mask: readonly boolean[], range: TextRange): string {
+  let said = ''
+  for (let i = range.start; i < range.end; i++) if (mask[i]) said += text.charAt(i)
+  return said.replace(/\s+/g, ' ').trim()
+}
+
+/** A first sentence at least this long is read in two clips, so the first one starts sooner. */
+const LONG_FIRST_SENTENCE_CHARS = 90
+/** Neither clip of a split sentence may be shorter than this. */
+const MIN_CLAUSE_CHARS = 25
+
+/**
+ * The first sentence of a turn, split at the clause boundary nearest its middle when it is long: a
+ * comma, semicolon or colon followed by a space, or a dash. Never inside brackets or parentheses, and
+ * not after an abbreviation; "1,000" and "10:30" have no space after the mark, so they stay whole. No
+ * piece is under 25 characters. Anything else comes back as it is.
+ */
+export function splitFirstSentence(text: string, range: TextRange, mask: readonly boolean[] = spokenMask(text)): TextRange[] {
+  const length = spokenText(text, mask, range).length
+  if (length < LONG_FIRST_SENTENCE_CHARS) return [range]
+
+  // the middle is of what is spoken: a long url in a link doesn't pull it off centre
+  let heard = 0
+  for (let i = range.start; i < range.end; i++) if (mask[i]) heard += 1
+  let before = 0
+  let best: { first: TextRange; second: TextRange; distance: number } | null = null
+  let depth = 0
+  for (let i = range.start; i < range.end; i++) {
+    const ch = text.charAt(i)
+    if (mask[i]) before += 1
+    if ('([{'.includes(ch)) depth += 1
+    else if (')]}'.includes(ch)) depth = Math.max(0, depth - 1)
+    if (depth > 0 || !mask[i]) continue
+
+    let firstEnd: number
+    if (',;:'.includes(ch)) {
+      if (!/\s/.test(text.charAt(i + 1)) || text.charAt(i - 1) === '.') continue
+      const word = /[\p{L}\p{N}.]+$/u.exec(text.slice(range.start, i))?.[0] ?? ''
+      if (NEVER_ENDS.has(word.toLowerCase().replace(/^\.+|\.+$/g, ''))) continue
+      firstEnd = i + 1
+    } else if (ch === '—' || ch === '–' || (ch === '-' && /\s/.test(text.charAt(i - 1)) && /\s/.test(text.charAt(i + 1)))) {
+      firstEnd = i
+    } else {
+      continue
+    }
+    let secondStart = i + 1
+    while (secondStart < range.end && /\s/.test(text.charAt(secondStart))) secondStart += 1
+    while (firstEnd > range.start && /\s/.test(text.charAt(firstEnd - 1))) firstEnd -= 1
+    const first = { start: range.start, end: firstEnd }
+    const second = { start: secondStart, end: range.end }
+    if (spokenText(text, mask, first).length < MIN_CLAUSE_CHARS || spokenText(text, mask, second).length < MIN_CLAUSE_CHARS) continue
+    const distance = Math.abs(before - heard / 2)
+    if (!best || distance < best.distance) best = { first, second, distance }
+  }
+  return best ? [best.first, best.second] : [range]
+}
+
 /** One word of a spoken range with the stretch of the clip it is estimated to fill, in seconds. */
 export interface WordTiming extends TextRange {
   from: number
@@ -101,24 +211,30 @@ const PAUSE_WEIGHT = { weak: 2.5, strong: 5 } as const
  * The timings are contiguous: a word lasts until the next one starts.
  */
 export function estimateWordTimings(text: string, range: TextRange, duration: number): WordTiming[] {
-  const words: Array<TextRange & { weight: number }> = []
+  // markdown syntax is never spoken: a word's weight counts only the characters that are
+  const spoken = spokenMask(text)
+  const words: Array<TextRange & { weight: number; endsSentence: boolean }> = []
   for (const match of text.slice(range.start, range.end).matchAll(/\S+/g)) {
     const token = match[0]
     const start = range.start + match.index
-    const letters = token.match(/[\p{L}\p{N}]/gu)?.length ?? 0
-    const pause = /[,;:]["'”’)\]]*$/.test(token)
+    let said = ''
+    for (let i = 0; i < token.length; i++) if (spoken[start + i]) said += token.charAt(i)
+    if (said === '') continue
+    const letters = said.match(/[\p{L}\p{N}]/gu)?.length ?? 0
+    const endsSentence = /[.!?…]["'”’»)\]]*$/.test(said)
+    const pause = /[,;:]["'”’)\]]*$/.test(said)
       ? PAUSE_WEIGHT.weak
-      : /[.!?…]["'”’»)\]]*$/.test(token) ? PAUSE_WEIGHT.strong : 0
+      : endsSentence ? PAUSE_WEIGHT.strong : 0
     const previous = words.at(-1)
     if (letters === 0) {
       // a dash or a stray mark has no sound of its own, only a short pause after the word before it
       if (previous) previous.weight += PAUSE_WEIGHT.weak
       continue
     }
-    words.push({ start, end: start + token.length, weight: letters + pause })
+    words.push({ start, end: start + token.length, weight: letters + pause, endsSentence })
   }
   const last = words.at(-1)
-  if (last) last.weight -= /[.!?…]["'”’»)\]]*$/.test(text.slice(last.start, last.end)) ? PAUSE_WEIGHT.strong : 0
+  if (last) last.weight -= last.endsSentence ? PAUSE_WEIGHT.strong : 0
 
   const total = words.reduce((sum, word) => sum + word.weight, 0)
   let at = 0

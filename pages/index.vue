@@ -15,6 +15,7 @@ const {
   stopTalking,
   isProcessingWake,
   isWakeListening,
+  isCapturing,
   audioEnergy,
   isSpeaking,
   isPlaying,
@@ -53,14 +54,14 @@ const canInteract = computed(() => isConnected.value && state.value === 'IDLE')
 const MIN_HOLD_MS = 300
 let pressStartedAt = 0
 
-// Virtual display state — resolves local recording into display states.
+// Virtual display state — resolves the client's own capture into display states.
 // Server LISTENING = transcribing audio (processing phase) → show as THINKING.
-// Local isRecording = actively capturing mic via button → show as LISTENING, and so is the
-// window that a bare wake word opens. Pressing over speech starts a capture while the server still says SPEAKING.
+// A capture that is really streaming to the server (button, space, or the window a bare wake word
+// opens) → show as LISTENING, whatever the server still says: a press over speech or over a reply
+// being written starts it before the server's state follows. A press that opened no capture shows nothing.
 const activeState = computed(() => {
-  if (isWakeListening.value) return 'LISTENING'
+  if (isWakeListening.value || isCapturing.value) return 'LISTENING'
   if (isProcessingWake.value) return 'THINKING'
-  if (isRecording.value && (state.value === 'IDLE' || state.value === 'SPEAKING')) return 'LISTENING'
   if (state.value === 'LISTENING') return 'THINKING'
   if (state.value === 'EXECUTING') return 'THINKING'
   return state.value
@@ -69,11 +70,10 @@ const activeState = computed(() => {
 function beginSpeaking(): void {
   if (!isConnected.value) return
   if (isSpeaking.value) {
-    // Barge-in: talking over butler silences it. While the model is still writing, the press
-    // goes no further, since a capture is only accepted once only speech is left.
+    // Barge-in: talking over butler silences it. If the model is still writing, the capture that
+    // follows also interrupts the turn, on the server.
     stopSpeaking()
-    if (isStreaming.value) return
-  } else if (!canInteract.value) {
+  } else if (!isStreaming.value && !canInteract.value) {
     return
   }
   pressStartedAt = Date.now()

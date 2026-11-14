@@ -144,6 +144,53 @@ describe('processCommand speech', () => {
   })
 })
 
+describe('a talk press while the reply is still being written', () => {
+  it('aborts the turn: the written text stays and is stored, the session is free for the capture, nothing more is requested', async () => {
+    speechRequests.length = 0
+    const requestsBefore = mock.requests.length
+    mock.enqueue({ frames: textFrames(`${FIRST}\n`, 'The second paragraph is half wri'), hang: true })
+    const events: ServerEvent[] = []
+    const session = new sessionModule.SessionManager(() => {})
+    const turn = pipeline.processCommand('write me something long', session, (event) => events.push(event))
+    await until(() => events.some((e) => e.type === 'block_delta' && e.text.includes('half wri')))
+    await until(() => speechRequests.length >= 1)
+    expect(session.canCapture()).toBe(true)
+
+    // what ws.ts does on audio_start while the model works
+    session.supersedeTurn()
+    session.setState('LISTENING')
+    await turn
+
+    // the unfinished paragraph was closed with what had been written of it
+    const partial = `${FIRST}\n\nThe second paragraph is half wri`
+    expect(events.filter((e) => e.type === 'block_end').map((e) => (e.type === 'block_end' ? e.text : ''))).toEqual([FIRST, 'The second paragraph is half wri'])
+    expect(events.filter((e) => e.type === 'response_end')).toEqual([{ type: 'response_end', text: partial }])
+    const conversation = events.find((e) => e.type === 'conversation')
+    const thread = await store.thread(conversation?.type === 'conversation' ? conversation.conversation.id : '')
+    expect(thread?.items.map((m) => [m.role, m.content])).toEqual([['user', 'write me something long'], ['assistant', partial]])
+    // the capture owns the session now: the old turn leaves its state alone, and speech was cut off
+    expect(session.getState()).toBe('LISTENING')
+    expect(mock.requests).toHaveLength(requestsBefore + 1)
+    await until(() => speechRequests.every((r) => r.hungUp))
+    expect(events.filter((e) => e.type === 'audio')).toHaveLength(0)
+  })
+
+  it('with nothing written yet, ends the response and stores no assistant turn', async () => {
+    mock.enqueue({ frames: [], hang: true })
+    const events: ServerEvent[] = []
+    const session = new sessionModule.SessionManager(() => {})
+    const turn = pipeline.processCommand('say nothing at all', session, (event) => events.push(event))
+    await until(() => events.some((e) => e.type === 'response_start'))
+    session.supersedeTurn()
+    await turn
+    expect(events.filter((e) => e.type === 'response_end')).toEqual([{ type: 'response_end', text: '' }])
+    expect(events.some((e) => e.type === 'response')).toBe(false)
+    const conversation = events.find((e) => e.type === 'conversation')
+    const thread = await store.thread(conversation?.type === 'conversation' ? conversation.conversation.id : '')
+    expect(thread?.items.map((m) => m.role)).toEqual(['user'])
+  })
+})
+
 describe('a closed socket never runs a turn', () => {
   it('closing during the final transcription pass aborts it: no LLM call, no stored turn, no events', async () => {
     const before = mock.requests.length

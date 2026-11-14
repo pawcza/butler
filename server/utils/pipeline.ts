@@ -34,9 +34,22 @@ const WHISPER_HALLUCINATION_PATTERNS: RegExp[] = [
   /^translated by/i,
   /^subtitles by/i,
   /^copyright/i,
+  // Polish: the same sign-offs and credits. Only the whole phrase counts, so "Dziękuję, zgaś światło" is a command.
+  /^dziękuj(ę|emy)( (bardzo|wszystkim|państwu|serdecznie))* za (uwagę|oglądanie|obejrzenie|wysłuchanie)/iu,
+  /^napisy\s*:/iu,
+  /^napisy (stworzone|wykonane|zrobione|przygotowane|przetłumaczone|tłumaczone) /iu,
+  /^tłumaczenie( i napisy)?\s*:/iu,
+  /amara\.org/i,
+  /^zapraszam (do|na) (subskrypcji|subskrybowania|obserwowania|oglądania|obejrzenia|kanał)/iu,
+  /^(za)?subskrybuj (kanał|nasz)/iu,
+  /^zostaw (łapkę|like|suba|subskrypcję)/iu,
+  /^do zobaczenia( (w|na) (następnym|kolejnym|przyszłym) \p{L}+)?$/iu,
+  /^do zobaczenia (w|na) (następnym|kolejnym|przyszłym) /iu,
+  /^(muzyka|brawa|oklaski|śmiech)$/iu,
+  /^\(.*\)$/,
 ]
 
-function isWhisperHallucination(text: string): boolean {
+export function isWhisperHallucination(text: string): boolean {
   const cleaned = text.replace(/[.!?,;:]+$/, '').trim()
   return WHISPER_HALLUCINATION_PATTERNS.some((p) => p.test(cleaned))
 }
@@ -180,6 +193,8 @@ export async function processCommand(
         format: config.TTS_RESPONSE_FORMAT,
         signal,
         onSpeaking: () => session.setState('SPEAKING'),
+        // the engine is down: no more speech this turn, and a session that was speaking is just thinking
+        onGiveUp: () => session.stopSpeech(),
       })
     : null
   if (speech) session.onStopSpeech(speech.stop)
@@ -220,7 +235,20 @@ export async function processCommand(
   } catch (err) {
     await userKept
     if (err instanceof LlmAbortedError) {
-      log.info('turn aborted, client disconnected')
+      if (session.isClosed) {
+        log.info('turn aborted, client disconnected')
+        session.finishTurn(turn.id)
+        return
+      }
+      // The user pressed talk over the running turn. What was written stays on screen and is
+      // stored; the session already belongs to the new capture, so there is no state to reset.
+      const partial = err.paragraphs.join('\n\n')
+      log.info(`turn interrupted by the user (${partial.length}ch written)`)
+      emit({ type: 'response_end', text: partial })
+      if (partial) {
+        emit({ type: 'response', text: partial })
+        await keep('assistant', partial)
+      }
       session.finishTurn(turn.id)
       return
     }

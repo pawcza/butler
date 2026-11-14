@@ -1,5 +1,5 @@
 import type { ClientMessage, ServerEvent } from '~/shared/types'
-import { FrameBudget, decodeAudioFrame } from '~/shared/audio'
+import { FrameBudget, MAX_JSON_FRAME_BYTES, decodeAudioFrame } from '~/shared/audio'
 
 const log = createLog('ws')
 const sessions = new Map<string, SessionManager>()
@@ -80,6 +80,12 @@ export default defineWebSocketHandler({
     // The Node adapter hands over text and binary frames alike as Buffers, without saying which.
     // JSON messages start with '{' (0x7b); audio frames start with AUDIO_FRAME_TAG.
     if (buffer[0] === 0x7b) {
+      // The platform has read the whole frame already (the socket library's limit is not ours to set
+      // here), but nothing is decoded or parsed past this point for one that is too big.
+      if (buffer.length > MAX_JSON_FRAME_BYTES) {
+        log.warn(`dropped an oversized text frame (${buffer.length} bytes)`)
+        return
+      }
       // Text / control message
       let parsed: ClientMessage | null = null
       try {
@@ -91,9 +97,7 @@ export default defineWebSocketHandler({
       // a capture in progress counts as busy too, so a typed command can't overlap it
       const busy = session.getState() !== 'IDLE' || captures.has(peer.id)
 
-      if (parsed.type === 'ping') {
-        send(peer, { type: 'pong' })
-      } else if (parsed.type === 'stop_speech') {
+      if (parsed.type === 'stop_speech') {
         session.stopSpeech()
         log.info('speech stopped by the client')
       } else if (parsed.type === 'set_conversation') {
@@ -119,9 +123,10 @@ export default defineWebSocketHandler({
       } else if (parsed.type === 'audio_start') {
         if (!session.canCapture()) {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
+          send(peer, { type: 'capture_refused' })
           return
         }
-        // barge-in: only speech is left of the turn, and the user is talking over it
+        // barge-in: the user talks over the speech, or over a reply still being written (that turn is aborted)
         if (session.getState() !== 'IDLE') session.supersedeTurn()
         warmUpSpeech()
         // a capture the client left open is replaced, never merged

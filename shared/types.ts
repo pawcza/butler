@@ -51,6 +51,8 @@ export type ServerEvent =
   | { type: 'block_delta'; blockId: string; text: string }
   /** Block finalized — `text` is the complete body. */
   | { type: 'block_end'; blockId: string; text: string }
+  /** The block is gone: a passing notice (waiting for the speech model) that has nothing left to say. */
+  | { type: 'block_remove'; blockId: string }
   /** Response finished. `text` is the final spoken message body (empty if the model returned no message). */
   | { type: 'response_end'; text: string }
   /**
@@ -60,16 +62,23 @@ export type ServerEvent =
    */
   | { type: 'audio'; data: string; format: 'mp3' | 'wav'; block?: { id: string; start: number; end: number } }
   | { type: 'error'; message: string }
-  | { type: 'pong' }
+  /**
+   * The server did not open the capture `audio_start` asked for (it is busy). The client drops its
+   * capture state: the frames it sends are ignored and no `audio_end` is wanted.
+   */
+  | { type: 'capture_refused' }
   /** A fresh thread was opened for this session's first message. */
   | { type: 'conversation'; conversation: ConversationSummary }
 
 // WebSocket messages: client -> server, as JSON. Microphone audio goes between `audio_start` and
 // `audio_end` as binary frames tagged with AUDIO_FRAME_TAG (see shared/audio.ts).
 export type ClientMessage =
-  | { type: 'ping' }
   | { type: 'command'; text: string }
-  /** Open a capture. Accepted while the session is IDLE, or when only speech is left of the turn (barge-in). */
+  /**
+   * Open a capture. Accepted while the session is IDLE, when only speech is left of the turn
+   * (barge-in), or while the model is still writing (the running turn is interrupted: its request is
+   * aborted, what it wrote is kept and stored). Otherwise answered with `capture_refused`.
+   */
   | { type: 'audio_start' }
   /** Close the capture and answer what was said. */
   | { type: 'audio_end' }

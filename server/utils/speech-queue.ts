@@ -1,8 +1,22 @@
 import type { ServerEvent } from '~/shared/types'
-import { splitSentences } from '~/shared/speech'
+import { spokenMask, spokenText, splitFirstSentence, splitSentences } from '~/shared/speech'
 
 /** The label of the activity bubble shown while the speech server is slow to answer. */
 export const WARMING_LABEL = 'Warming up the speech model'
+
+/**
+ * The speech engine can't be reached or timed out. The queue gives up on the turn's speech at once,
+ * since every later sentence would only wait just as long.
+ */
+export class SpeechEngineDownError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'SpeechEngineDownError'
+  }
+}
+
+/** Failures of any kind in one turn after which the rest of its speech is dropped. */
+const MAX_FAILURES = 2
 
 export interface SpeechQueueOptions<Voice> {
   /** Turns one sentence into audio in `voice`. Must give up when `signal` fires. */
@@ -17,6 +31,8 @@ export interface SpeechQueueOptions<Voice> {
   concurrency?: number
   /** How long the next sentence may wait before the warming bubble shows. */
   warmingAfterMs?: number
+  /** The queue gave up on the turn's speech after repeated failures. */
+  onGiveUp?: () => void
 }
 
 interface Job<Voice> {
@@ -31,7 +47,10 @@ interface Job<Voice> {
 /**
  * The speech of one turn. Message blocks are split into sentences, synthesized a couple at a time
  * and emitted as `audio` events strictly in order, each saying which characters it speaks.
- * `stop` drops everything pending and aborts what is in flight: no audio event follows it.
+ * `stop` drops everything pending and aborts what is in flight: no audio event follows it. A
+ * synthesis that fails because the engine is unreachable or timed out, or a second failure of any
+ * kind, does the same: the first error is shown and the rest of the turn is not spoken.
+ * The first sentence of the turn is read in two clips when it is long.
  */
 export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
   const concurrency = options.concurrency ?? 2
@@ -42,7 +61,8 @@ export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
   const waiters: Array<() => void> = []
   let running = 0
   let spoke = false
-  let failureReported = false
+  let failures = 0
+  let splitFirst = true
   let lastEmitAt: number | null = null
   let warmTimer: ReturnType<typeof setTimeout> | null = null
   let warmBlock: string | null = null
@@ -52,7 +72,7 @@ export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
 
   function closeWarming(): void {
     if (warmBlock === null) return
-    options.emit({ type: 'block_end', blockId: warmBlock, text: '' })
+    options.emit({ type: 'block_remove', blockId: warmBlock })
     warmBlock = null
   }
 
@@ -96,14 +116,23 @@ export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
           format: options.format,
           ...(head.block ? { block: head.block } : {}),
         })
-      } else if (!failureReported) {
-        failureReported = true
-        const err = head.result.error
-        options.emit({ type: 'error', message: `TTS failed: ${err instanceof Error ? err.message : err}` })
       }
     }
     watchHead()
     settle()
+  }
+
+  /**
+   * Counted the moment a sentence fails, not when it reaches the head of the line: a later sentence
+   * can fail first, and waiting for its turn would let one more request go out to a dead engine.
+   */
+  function noteFailure(err: unknown): void {
+    failures += 1
+    if (failures === 1) options.emit({ type: 'error', message: `TTS failed: ${err instanceof Error ? err.message : err}` })
+    if (err instanceof SpeechEngineDownError || failures >= MAX_FAILURES) {
+      options.onGiveUp?.()
+      stopper.abort()
+    }
   }
 
   function pump(): void {
@@ -114,7 +143,10 @@ export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
       running += 1
       options.synthesize(job.text, job.voice, signal).then(
         (audio) => { job.result = { audio } },
-        (error: unknown) => { job.result = { error } },
+        (error: unknown) => {
+          job.result = { error }
+          if (!stopped()) noteFailure(error)
+        },
       ).finally(() => {
         running -= 1
         if (stopped()) return
@@ -139,9 +171,18 @@ export function createSpeechQueue<Voice>(options: SpeechQueueOptions<Voice>) {
      */
     speak(blockId: string | null, text: string, voice: Voice): void {
       if (stopped()) return
-      for (const range of splitSentences(text)) {
+      const mask = spokenMask(text)
+      let ranges = splitSentences(text)
+      if (splitFirst && ranges[0]) {
+        splitFirst = false
+        ranges = [...splitFirstSentence(text, ranges[0], mask), ...ranges.slice(1)]
+      }
+      for (const range of ranges) {
+        // the engine reads the words, not the markdown; the range stays that of the displayed text
+        const said = spokenText(text, mask, range)
+        if (!said) continue
         jobs.push({
-          text: text.slice(range.start, range.end),
+          text: said,
           voice,
           block: blockId !== null ? { id: blockId, ...range } : null,
           startedAt: null,
