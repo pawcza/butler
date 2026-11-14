@@ -15,10 +15,11 @@ export interface BlockHandlers {
   onBlockDelta: (blockId: string, text: string) => void
   onBlockEnd: (blockId: string, text: string) => void
   /**
-   * Fires when a speakable chunk is ready: one paragraph of message text, delimited by `\n`.
+   * Fires when a message block is complete and ready to be spoken: `text` is the block's full text,
+   * exactly as `onBlockEnd` gave it, so character ranges into it match what the client shows.
    * The pipeline uses this to synthesize TTS as the model streams instead of waiting for the full turn.
    */
-  onSpeakChunk: (text: string) => void
+  onSpeakChunk: (blockId: string, text: string) => void
 }
 
 export interface ToolCall {
@@ -176,8 +177,9 @@ export function createParagraphChunker(messageId: string, handlers: BlockHandler
 
   function close(): void {
     if (!blockId) return
-    const trimmed = endBlock()
-    if (trimmed) handlers.onSpeakChunk(trimmed)
+    const id = blockId
+    const full = current
+    if (endBlock()) handlers.onSpeakChunk(id, full)
   }
 
   function append(part: string): void {

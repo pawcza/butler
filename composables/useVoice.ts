@@ -1,6 +1,10 @@
 import type { MicVAD } from '@ricky0123/vad-web'
-import type { BlockKind, ConversationThread, ServerEvent, SessionState, TtsModelInfo } from '~/shared/types'
+import type { BlockKind, ConversationThread, ServerEvent, SessionState } from '~/shared/types'
+import { PCM_SAMPLE_RATE, PRE_ROLL_RING_SECONDS, encodeAudioFrame } from '~/shared/audio'
+import { PcmRing } from '~/utils/pcm'
 import { float32ToWav } from '~/utils/wav'
+import { createSpeechPlayer } from '~/utils/speech-player'
+import pcmCaptureUrl from '~/worklets/pcm-capture.ts?worker&url'
 
 /** A single persistent bubble in the chat log. `user` is the spoken transcript; the rest are response blocks. */
 export interface LogItem {
@@ -12,12 +16,28 @@ export interface LogItem {
 }
 
 const STORAGE_KEYS = {
-  ttsModel: 'butler-tts-model',
-  ttsVoice: 'butler-tts-voice',
   volume: 'butler-volume',
 } as const
+/** Left behind by the voice picker, which is gone: the voice is the server's setting. */
+const STALE_STORAGE_KEYS = ['butler-tts-model', 'butler-tts-voice']
 /** Hard cap on bubbles — bounds in-memory reactive cost on very long-running sessions. */
 const MAX_LOG_ITEMS = 200
+/** Audio from just before a press goes out with it, so a quick start keeps its first word. */
+const PRE_ROLL_SAMPLES = PCM_SAMPLE_RATE * 0.6
+/**
+ * After a bare wake word, audio from this long before the VAD reported its end. That stretch is
+ * the VAD's trailing silence, so it only covers the VAD running a little behind the microphone.
+ */
+const WAKE_PRE_ROLL_MARGIN = PCM_SAMPLE_RATE * 0.25
+/** A push-to-talk release keeps streaming this long, so the last word is never clipped. */
+const RELEASE_TAIL_MS = 200
+/** The vad-web defaults, for the one stream the VAD and the capture share. */
+const MIC_CONSTRAINTS: MediaTrackConstraints = {
+  channelCount: 1,
+  echoCancellation: true,
+  autoGainControl: true,
+  noiseSuppression: true,
+}
 
 function loadVolume(): number {
   if (typeof localStorage === 'undefined') return 1
@@ -35,33 +55,36 @@ let wakeCheckInFlight = false
 let minWindowElapsed = false
 let activeListeningTimer: ReturnType<typeof setTimeout> | null = null
 let minWindowTimer: ReturnType<typeof setTimeout> | null = null
+let releaseTailTimer: ReturnType<typeof setTimeout> | null = null
 
 let ws: WebSocket | null = null
-let mediaRecorder: MediaRecorder | null = null
-let audioChunks: Blob[] = []
-let audioCtx: AudioContext | null = null
-let gainNode: GainNode | null = null
-let isPlayingAudio = false
+// One microphone stream, opened once and kept open. The PCM worklet and the VAD both read it.
+let micStream: MediaStream | null = null
+let micCtx: AudioContext | null = null
+let micOpening: Promise<boolean> | null = null
+/** Stops the gesture listeners that keep `micCtx` running. */
+let micGestureCleanup: (() => void) | null = null
+/** The latest seconds of microphone audio as 16 kHz PCM, for pre-roll. */
+const ring = new PcmRing(PCM_SAMPLE_RATE * PRE_ROLL_RING_SECONDS)
+/** Microphone frames are streaming to the server, between `audio_start` and `audio_end`. */
+let capturing = false
+/** The capture is closed but its final transcript hasn't arrived; its partials still count. */
+let awaitingFinal = false
+/** Id of the partial transcript bubble being shown, if any. */
+let liveTranscriptId: string | null = null
+/** Ring position of the last moment the client was busy: capturing, playing, or in a turn. */
+let lastBusyAt = -1
+/** Ring positions of the VAD's latest speech start and end. */
+let speechStartedAt = 0
+let lastSpeechEndAt = 0
+let vadSpeaking = false
+let pressGen = 0
 /** Last state the server reported. Playback can end while a tool loop is still running. */
 let serverState: SessionState = 'IDLE'
-/** FIFO queue of audio chunks received from the server while another one is still playing. */
-const audioQueue: Array<{ base64: string; format: 'mp3' | 'wav' }> = []
-let recordingGen = 0
 
 // Module-level audio state — shared across composable re-invocations
 const audioEnergy = ref(0)
 const volume = ref(loadVolume())
-let analyserRafId = 0
-
-function ensureGain(ctx: AudioContext): GainNode {
-  if (!gainNode || gainNode.context !== ctx) {
-    gainNode = ctx.createGain()
-    gainNode.connect(ctx.destination)
-  }
-  gainNode.gain.value = volume.value
-  return gainNode
-}
-
 
 export function useVoice() {
   const state = ref<SessionState>('IDLE')
@@ -78,26 +101,25 @@ export function useVoice() {
   const passiveEnabled = ref(true)
   const isPassive = ref(false)
 
-  // True between wake word detection and first server state event — masks STT latency
+  // True between a wake word with its command attached and the first server state event — masks STT latency
   const isProcessingWake = ref(false)
+  // True while the window after a bare wake word is open and the microphone is streaming
+  const isWakeListening = ref(false)
 
-  // TTS voice selection
-  const availableModels = ref<TtsModelInfo[]>([])
-  const selectedModel = ref(
-    (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEYS.ttsModel)) || '',
-  )
-  const selectedVoice = ref(
-    (typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEYS.ttsVoice)) || '',
-  )
+  // ── Speech playback ─────────────────────────────────────────────────────────
 
-  // ── Preference re-sync ──────────────────────────────────────────────────────
-
-  function resyncPreferences(): void {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return
-    if (selectedModel.value && selectedVoice.value) {
-      ws.send(JSON.stringify({ type: 'set_voice', model: selectedModel.value, voice: selectedVoice.value }))
-    }
-  }
+  const player = createSpeechPlayer({
+    textOf: (blockId) => chatLog.value.findLast((b) => b.id === blockId)?.text,
+    volume: () => volume.value,
+    onEnergy: (energy) => { audioEnergy.value = energy },
+    onIdle: () => {
+      state.value = serverState
+      // between two sentences the highlight stays; once the turn's speech is over it goes
+      if (serverState !== 'SPEAKING') player.clearProgress()
+    },
+  })
+  /** Butler is speaking, or has speech queued or on its way. */
+  const isSpeaking = computed(() => player.active.value || state.value === 'SPEAKING')
 
   function pushLogItem(item: LogItem): void {
     chatLog.value.push(item)
@@ -108,6 +130,16 @@ export function useVoice() {
   /** Blocks usually arrive / update at the tail of the log, so searching right-to-left is O(1) in practice. */
   function findBlock(blockId: string): LogItem | undefined {
     return chatLog.value.findLast((b) => b.id === blockId)
+  }
+
+  function removeLogItem(id: string): void {
+    const index = chatLog.value.findLastIndex((b) => b.id === id)
+    if (index >= 0) chatLog.value.splice(index, 1)
+  }
+
+  function showError(message: string): void {
+    error.value = message
+    setTimeout(() => { error.value = null }, 5000)
   }
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -124,11 +156,18 @@ export function useVoice() {
 
     ws.onopen = () => {
       isConnected.value = true
-      resyncPreferences()
       // the server's session is per connection: tell a fresh one which thread we're in
       syncConversation()
     }
-    ws.onclose = () => { isConnected.value = false }
+    ws.onclose = () => {
+      isConnected.value = false
+      // the server dropped any capture with the socket
+      capturing = false
+      awaitingFinal = false
+      endWakeWindow()
+      if (liveTranscriptId !== null) removeLogItem(liveTranscriptId)
+      liveTranscriptId = null
+    }
     ws.onerror = () => { error.value = 'WebSocket connection failed' }
     ws.onmessage = (ev: MessageEvent) => handleMessage(ev)
   }
@@ -145,21 +184,48 @@ export function useVoice() {
       case 'state':
         isProcessingWake.value = false
         serverState = event.state
+        if (event.state !== 'IDLE' && capturing) {
+          // the server closed the capture itself (length limit) and is answering it
+          capturing = false
+          awaitingFinal = true
+          endWakeWindow()
+        }
+        if (event.state === 'IDLE') awaitingFinal = false
         // Don't go IDLE while audio is still playing — stay in SPEAKING
-        if (event.state === 'IDLE' && isPlayingAudio) break
+        if (event.state === 'IDLE' && player.active.value) break
         state.value = event.state
+        if (!player.active.value && event.state !== 'SPEAKING') player.clearProgress()
         break
-      case 'transcript':
-        audioQueue.length = 0
-        pushLogItem({
-          id: event.id,
-          kind: 'user',
-          text: event.text,
-          streaming: false,
-        })
+      case 'transcript_partial': {
+        // late partials of a cancelled utterance are ignored
+        if (!capturing && !awaitingFinal) break
+        liveTranscriptId = event.id
+        const item = findBlock(event.id)
+        if (item) item.text = event.text
+        else pushLogItem({ id: event.id, kind: 'user', text: event.text, streaming: true })
+        break
+      }
+      case 'transcript': {
+        player.stop()
+        awaitingFinal = false
+        liveTranscriptId = null
+        const item = findBlock(event.id)
+        if (item) {
+          item.text = event.text
+          item.streaming = false
+        } else {
+          pushLogItem({ id: event.id, kind: 'user', text: event.text, streaming: false })
+        }
+        break
+      }
+      case 'transcript_discarded':
+        awaitingFinal = false
+        if (event.id === liveTranscriptId) liveTranscriptId = null
+        removeLogItem(event.id)
         break
       case 'response_start':
         isStreaming.value = true
+        player.accept()
         break
       case 'block_start': {
         const item: LogItem = {
@@ -195,7 +261,7 @@ export function useVoice() {
         setUrlConversation(event.conversation.id)
         break
       case 'audio':
-        void playAudio(event.data, event.format)
+        player.enqueue({ data: event.data, format: event.format, ...(event.block ? { block: event.block } : {}) })
         break
       case 'error':
         error.value = event.message
@@ -204,77 +270,13 @@ export function useVoice() {
     }
   }
 
-  // ── Audio playback ────────────────────────────────────────────────────────────
+  // ── Stop and pause ────────────────────────────────────────────────────────────
 
-  async function playAudio(base64: string, format: 'mp3' | 'wav'): Promise<void> {
-    // Queue if something's already playing — the current clip's onended will drain us.
-    if (isPlayingAudio) {
-      audioQueue.push({ base64, format })
-      return
-    }
-    // Set flag BEFORE any async work — the server IDLE event can arrive
-    // while decodeAudioData is running and must be blocked.
-    isPlayingAudio = true
-    try {
-      await playOne(base64)
-    } catch {
-      // swallowed — finishedPlaying below still runs
-    }
-    while (audioQueue.length > 0) {
-      const next = audioQueue.shift()
-      if (!next) break
-      try {
-        await playOne(next.base64)
-      } catch {
-        // keep draining on error
-      }
-    }
-    cancelAnimationFrame(analyserRafId)
-    audioEnergy.value = 0
-    isPlayingAudio = false
+  /** Silences butler now and tells the server to drop the rest of this turn's speech. */
+  function stopSpeaking(): void {
+    player.stop()
     state.value = serverState
-  }
-
-  function playOne(base64: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      try {
-        if (!audioCtx) audioCtx = new AudioContext()
-        const binary = atob(base64)
-        const bytes = new Uint8Array(binary.length)
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-        audioCtx.decodeAudioData(bytes.buffer).then((decoded) => {
-          const ctx = audioCtx
-          if (!ctx) { resolve(); return }
-          const source = ctx.createBufferSource()
-          source.buffer = decoded
-
-          const analyser = ctx.createAnalyser()
-          analyser.fftSize = 256
-          // source → analyser → gain → destination
-          // Analyser sits before gain so visualizations stay consistent regardless of volume.
-          source.connect(analyser)
-          analyser.connect(ensureGain(ctx))
-
-          const dataArray = new Uint8Array(analyser.frequencyBinCount)
-          function updateEnergy() {
-            analyser.getByteFrequencyData(dataArray)
-            let sum = 0
-            for (let i = 0; i < dataArray.length; i++) {
-              const v = dataArray[i] ?? 0
-              sum += v * v
-            }
-            audioEnergy.value = Math.sqrt(sum / dataArray.length) / 128
-            analyserRafId = requestAnimationFrame(updateEnergy)
-          }
-          updateEnergy()
-
-          source.onended = () => { resolve() }
-          source.start()
-        }).catch(() => resolve())
-      } catch {
-        resolve()
-      }
-    })
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stop_speech' }))
   }
 
   function playAckSound(): void {
@@ -282,71 +284,166 @@ export function useVoice() {
     new Audio('/ack-sound.mp3').play().catch(() => {})
   }
 
-  // ── Manual recording ─────────────────────────────────────────────────────────
+  // ── Microphone ───────────────────────────────────────────────────────────────
 
-  async function startRecording(silent = false): Promise<void> {
-    if (mediaRecorder?.state === 'recording') return
-    if (!silent) {
-      playAckSound()
-      if (vad) vad.pause()
-    }
-    const gen = ++recordingGen
+  /** Opens the microphone once; every later call reuses it. Resolves to whether it is open. */
+  async function ensureMic(): Promise<boolean> {
+    if (micStream && micCtx) return true
+    micOpening ??= openMic()
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // If stopRecording was called while awaiting mic access, discard
-      if (gen !== recordingGen) {
-        stream.getTracks().forEach((t) => t.stop())
-        return
-      }
-      audioChunks = []
-      mediaRecorder = new MediaRecorder(stream)
-      mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data) }
-      mediaRecorder.start()
-    } catch (err) {
-      error.value = `Microphone access denied: ${err instanceof Error ? err.message : err}`
-      setTimeout(() => { error.value = null }, 5000)
+      return await micOpening
+    } finally {
+      micOpening = null
     }
   }
 
-  function stopRecording(discard = false): void {
-    recordingGen++ // invalidate any in-flight startRecording
-    if (!mediaRecorder || mediaRecorder.state === 'inactive') return
-    if (discard) {
-      mediaRecorder.onstop = null
-      mediaRecorder.stop()
-      mediaRecorder.stream.getTracks().forEach((t) => t.stop())
-      if (vad && isPassive.value) vad.start()
+  async function openMic(): Promise<boolean> {
+    let stream: MediaStream | null = null
+    let ctx: AudioContext | null = null
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS })
+      ctx = new AudioContext()
+      await ctx.audioWorklet.addModule(pcmCaptureUrl)
+      const node = new AudioWorkletNode(ctx, 'pcm-capture')
+      node.port.onmessage = (ev: MessageEvent<Int16Array>) => onMicFrame(ev.data)
+      ctx.createMediaStreamSource(stream).connect(node)
+      micStream = stream
+      micCtx = ctx
+      micGestureCleanup = keepRunning(ctx)
+      return true
+    } catch (err) {
+      stream?.getTracks().forEach((t) => t.stop())
+      void ctx?.close()
+      showError(`Microphone unavailable: ${err instanceof Error ? err.message : err}`)
+      return false
+    }
+  }
+
+  /**
+   * A context created with no user gesture behind it (the wake word flow) can start suspended, and a
+   * suspended one never runs the capture worklet. Try now, and retry on every pointer or key press
+   * while it is not running. Returns the cleanup.
+   */
+  function keepRunning(ctx: AudioContext): () => void {
+    const wake = (): void => {
+      if (ctx.state !== 'running') void ctx.resume().catch(() => {})
+    }
+    const events = ['pointerdown', 'keydown'] as const
+    for (const name of events) window.addEventListener(name, wake, true)
+    wake()
+    return () => { for (const name of events) window.removeEventListener(name, wake, true) }
+  }
+
+  function releaseMic(): void {
+    closeCapture(true)
+    micGestureCleanup?.()
+    micGestureCleanup = null
+    micStream?.getTracks().forEach((t) => t.stop())
+    void micCtx?.close()
+    micStream = null
+    micCtx = null
+  }
+
+  function isBusy(): boolean {
+    return capturing || awaitingFinal || player.active.value || state.value !== 'IDLE'
+      || isProcessingWake.value || vadPhase === 'active'
+  }
+
+  /** One ~100 ms frame of 16 kHz PCM from the worklet. */
+  function onMicFrame(pcm: Int16Array): void {
+    ring.write(pcm)
+    if (isBusy()) lastBusyAt = ring.position
+    if (capturing && ws?.readyState === WebSocket.OPEN) ws.send(encodeAudioFrame(pcm))
+  }
+
+  // ── Capture: streaming one utterance to the server ───────────────────────────
+
+  /** Starts streaming, beginning with the ring buffer from `from` onwards. */
+  function openCapture(from: number): boolean {
+    if (capturing || !ws || ws.readyState !== WebSocket.OPEN) return false
+    ws.send(JSON.stringify({ type: 'audio_start' }))
+    capturing = true
+    awaitingFinal = false
+    const preRoll = ring.readSince(from)
+    if (preRoll.length > 0) ws.send(encodeAudioFrame(preRoll))
+    return true
+  }
+
+  /** Ends the capture: the server answers it, or with `cancel` drops it. */
+  function closeCapture(cancel: boolean): void {
+    endWakeWindow()
+    if (releaseTailTimer !== null) {
+      clearTimeout(releaseTailTimer)
+      releaseTailTimer = null
+    }
+    if (!capturing) return
+    capturing = false
+    awaitingFinal = !cancel
+    if (cancel && liveTranscriptId !== null) {
+      removeLogItem(liveTranscriptId)
+      liveTranscriptId = null
+    }
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: cancel ? 'audio_cancel' : 'audio_end' }))
+    }
+  }
+
+  /** Push-to-talk pressed. The first press opens the microphone if passive listening hasn't. */
+  async function startTalking(): Promise<void> {
+    if (capturing) {
+      // pressed again inside the release tail: the same capture goes on, the tail no longer ends it
+      if (releaseTailTimer !== null) {
+        clearTimeout(releaseTailTimer)
+        releaseTailTimer = null
+      }
       return
     }
-    if (!ws) return
-    const currentWs = ws
-    mediaRecorder.onstop = async () => {
-      if (!currentWs) return
-      const blob = new Blob(audioChunks, { type: 'audio/webm' })
-      currentWs.send(await blob.arrayBuffer())
+    playAckSound()
+    const gen = ++pressGen
+    if (!(await ensureMic())) return
+    // released while the microphone was opening
+    if (gen !== pressGen) return
+    void micCtx?.resume()
+    openCapture(ring.position - PRE_ROLL_SAMPLES)
+  }
+
+  /**
+   * Push-to-talk released; `discard` drops a press too short to mean anything. A real release keeps
+   * streaming for a moment first, so the last word isn't clipped.
+   */
+  function stopTalking(discard = false): void {
+    pressGen++
+    if (discard || !capturing) {
+      closeCapture(discard)
+      return
     }
-    mediaRecorder.stop()
-    mediaRecorder.stream.getTracks().forEach((t) => t.stop())
-    if (vad && isPassive.value) vad.start()
+    releaseTailTimer ??= setTimeout(() => closeCapture(false), RELEASE_TAIL_MS)
   }
 
   // ── Passive VAD + wake word ───────────────────────────────────────────────────
 
   async function handleSpeechEnd(audio: Float32Array): Promise<void> {
-    if (vadPhase === 'passive') {
-      if (wakeCheckInFlight || state.value !== 'IDLE') return
-      wakeCheckInFlight = true
-      try {
-        await checkWakeWord(audio)
-      } finally {
-        wakeCheckInFlight = false
-      }
-    } else if (vadPhase === 'active' && minWindowElapsed) {
-      triggerActiveStop()
+    const startedAt = speechStartedAt
+    const endedAt = ring.position
+    vadSpeaking = false
+    lastSpeechEndAt = endedAt
+    if (vadPhase === 'active') {
+      if (minWindowElapsed) closeCapture(false)
+      return
+    }
+    // Speech that overlapped a capture, playback or a turn is never a wake word: that is
+    // butler's own voice or the user's command.
+    if (wakeCheckInFlight || isBusy() || lastBusyAt >= startedAt) return
+    wakeCheckInFlight = true
+    try {
+      await checkWakeWord(audio, endedAt)
+    } finally {
+      wakeCheckInFlight = false
     }
   }
 
-  async function checkWakeWord(audio: Float32Array): Promise<void> {
+  /** `endedAt` is the ring position where the wake utterance ended. */
+  async function checkWakeWord(audio: Float32Array, endedAt: number): Promise<void> {
     const wav = float32ToWav(audio)
     const blob = new Blob([wav], { type: 'audio/wav' })
     const form = new FormData()
@@ -360,14 +457,14 @@ export function useVoice() {
       if (command === null) return
 
       playAckSound()
-      isProcessingWake.value = true
 
       if (command.length > 2) {
         // Alexa-style: command is in the same utterance — send directly to pipeline
+        isProcessingWake.value = true
         ws?.send(JSON.stringify({ type: 'command', text: command }))
       } else {
-        // Bare wake word — open active listening window
-        await triggerActiveStart()
+        // Bare wake word: listen for the command, which may already be under way
+        triggerActiveStart(endedAt)
       }
     } catch {
       // Passive listening keeps going; the next utterance gets a fresh attempt.
@@ -375,27 +472,31 @@ export function useVoice() {
     }
   }
 
-  async function triggerActiveStart(): Promise<void> {
+  /**
+   * Opens the listening window after a bare wake word. Its audio starts where the wake word
+   * ended (`wakeEndedAt`), since the check takes a while and the user often speaks during it.
+   * The VAD keeps running, so the end of speech closes the window.
+   */
+  function triggerActiveStart(wakeEndedAt: number): void {
+    if (!openCapture(wakeEndedAt - WAKE_PRE_ROLL_MARGIN)) return
     vadPhase = 'active'
+    isWakeListening.value = true
     minWindowElapsed = false
-
-    if (vad) vad.pause()
-    await startRecording(true)
 
     // Minimum grace window — don't close on silence before this elapses
     minWindowTimer = setTimeout(() => {
       minWindowElapsed = true
+      // the whole command may have been said while the wake word was being checked
+      if (!vadSpeaking && lastSpeechEndAt > wakeEndedAt) closeCapture(false)
     }, 1500)
 
     // Hard maximum — send regardless of VAD after 10s
-    activeListeningTimer = setTimeout(() => {
-      if (vadPhase === 'active') triggerActiveStop()
-    }, 10_000)
+    activeListeningTimer = setTimeout(() => closeCapture(false), 10_000)
   }
 
-  function triggerActiveStop(): void {
+  function endWakeWindow(): void {
     vadPhase = 'passive'
-
+    isWakeListening.value = false
     if (minWindowTimer !== null) {
       clearTimeout(minWindowTimer)
       minWindowTimer = null
@@ -404,15 +505,17 @@ export function useVoice() {
       clearTimeout(activeListeningTimer)
       activeListeningTimer = null
     }
-
-    stopRecording()
-    if (vad) vad.start()
   }
 
   async function startPassiveListening(): Promise<void> {
     if (vad || vadStarting) return // already running or initializing
     vadStarting = true
     try {
+      if (!(await ensureMic()) || !micStream || !micCtx) {
+        passiveEnabled.value = false
+        return
+      }
+      const stream = micStream
       // Dynamic import — client-side only; never runs on server
       const { MicVAD } = await import('@ricky0123/vad-web')
       vad = await MicVAD.new({
@@ -421,6 +524,16 @@ export function useVoice() {
         model: 'v5',
         minSpeechMs: 30,
         ortConfig: (ort) => { ort.env.wasm.numThreads = 1 },
+        // The VAD reads the shared microphone; pausing or destroying it must never stop the tracks.
+        audioContext: micCtx,
+        getStream: async () => stream,
+        pauseStream: async () => {},
+        resumeStream: async () => stream,
+        onSpeechStart: () => {
+          vadSpeaking = true
+          speechStartedAt = ring.position
+        },
+        onVADMisfire: () => { vadSpeaking = false },
         onSpeechEnd: (audio: Float32Array) => {
           void handleSpeechEnd(audio)
         },
@@ -428,8 +541,7 @@ export function useVoice() {
       await vad.start()
       isPassive.value = true
     } catch (err) {
-      error.value = `Passive listening unavailable: ${err instanceof Error ? err.message : err}`
-      setTimeout(() => { error.value = null }, 5000)
+      showError(`Passive listening unavailable: ${err instanceof Error ? err.message : err}`)
       passiveEnabled.value = false
     } finally {
       vadStarting = false
@@ -437,12 +549,12 @@ export function useVoice() {
   }
 
   function stopPassiveListening(): void {
+    if (vadPhase === 'active') closeCapture(false)
     if (!vad) return
     vad.pause()
     vad.destroy()
     vad = null
     isPassive.value = false
-    vadPhase = 'passive'
   }
 
   watch(passiveEnabled, (enabled) => {
@@ -456,10 +568,11 @@ export function useVoice() {
   // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
   onMounted(async () => {
+    for (const key of STALE_STORAGE_KEYS) localStorage.removeItem(key)
     connect()
     const reopen = new URL(window.location.href).searchParams.get('c')
     if (reopen) void openConversation(reopen)
-    const speechRecognition = await fetchVoiceModels()
+    const speechRecognition = await fetchSpeechRecognition()
     // Without speech recognition there is nothing to do with the mic, so don't ask for it.
     if (passiveEnabled.value && speechRecognition) void startPassiveListening()
   })
@@ -467,6 +580,7 @@ export function useVoice() {
   onUnmounted(() => {
     ws?.close()
     stopPassiveListening()
+    releaseMic()
   })
 
   // ── Conversations ────────────────────────────────────────────────────────────
@@ -519,45 +633,16 @@ export function useVoice() {
     if (conversationId.value === id) newConversation()
   }
 
-  // ── TTS voice selection ──────────────────────────────────────────────────────
+  // ── Server capabilities ──────────────────────────────────────────────────────
 
   /** Resolves to whether the server has speech recognition configured. */
-  async function fetchVoiceModels(): Promise<boolean> {
+  async function fetchSpeechRecognition(): Promise<boolean> {
     try {
-      const data = await $fetch<{
-        models: TtsModelInfo[]
-        defaults: { model: string; voice: string }
-        stt: boolean
-      }>('/api/tts/voices')
-      availableModels.value = data.models
-
-      // Init from localStorage or server defaults
-      const storedModel = localStorage.getItem(STORAGE_KEYS.ttsModel)
-      const storedVoice = localStorage.getItem(STORAGE_KEYS.ttsVoice)
-      if (storedModel && storedVoice) {
-        selectedModel.value = storedModel
-        selectedVoice.value = storedVoice
-      } else {
-        selectedModel.value = data.defaults.model
-        selectedVoice.value = data.defaults.voice
-      }
-
-      // Re-send preferences now that voice refs are populated — covers the
-      // race where ws.onopen fired before this fetch resolved.
-      resyncPreferences()
-      return data.stt
+      return (await $fetch<{ stt: boolean }>('/api/capabilities')).stt
     } catch {
-      // Non-critical — voice selector just stays empty
+      // Non-critical: assume it is there, and let the first capture say otherwise.
       return true
     }
-  }
-
-  function setVoice(model: string, voice: string): void {
-    selectedModel.value = model
-    selectedVoice.value = voice
-    localStorage.setItem(STORAGE_KEYS.ttsModel, model)
-    localStorage.setItem(STORAGE_KEYS.ttsVoice, voice)
-    ws?.send(JSON.stringify({ type: 'set_voice', model, voice }))
   }
 
   // ── Misc ──────────────────────────────────────────────────────────────────────
@@ -569,7 +654,7 @@ export function useVoice() {
   function setVolume(v: number): void {
     const clamped = Math.max(0, Math.min(1, v))
     volume.value = clamped
-    if (gainNode) gainNode.gain.value = clamped
+    player.applyVolume()
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(STORAGE_KEYS.volume, String(clamped))
     }
@@ -598,15 +683,19 @@ export function useVoice() {
     passiveEnabled,
     isPassive,
     isProcessingWake: readonly(isProcessingWake),
+    isWakeListening: readonly(isWakeListening),
     audioEnergy: readonly(audioEnergy),
-    availableModels: readonly(availableModels),
-    selectedModel: readonly(selectedModel),
-    selectedVoice: readonly(selectedVoice),
-    startRecording,
-    stopRecording,
+    isSpeaking,
+    isPlaying: player.active,
+    isPaused: player.paused,
+    speechProgress: player.progress,
+    stopSpeaking,
+    pauseSpeaking: player.pause,
+    resumeSpeaking: player.resume,
+    startTalking,
+    stopTalking,
     sendPing,
     sendCommand,
-    setVoice,
     volume: readonly(volume),
     setVolume,
   }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createConversationStore } from '../server/utils/conversations'
-import { matchWakeWord } from '../shared/text'
+import { detectLanguage, matchWakeWord } from '../shared/text'
 
 describe('conversation store', () => {
   let dir: string
@@ -120,5 +120,17 @@ describe('matchWakeWord', () => {
   it('is empty when the wake word is said alone, and null when it is not said', () => {
     expect(matchWakeWord('Butler.', 'butler')).toBe('')
     expect(matchWakeWord('good morning', 'butler')).toBeNull()
+  })
+})
+
+describe('detectLanguage', () => {
+  it('finds Polish by its letters, or by two common words without any', () => {
+    expect(detectLanguage('Marlena ruszyła do pracy.', ['pl'])).toBe('pl')
+    expect(detectLanguage('Tak, to jest kot.', ['pl'])).toBe('pl')
+  })
+
+  it('leaves English, and anything it has no voice for, to the default', () => {
+    expect(detectLanguage('The hallway lights are on, sir. We have ten of them.', ['pl'])).toBeNull()
+    expect(detectLanguage('Marlena ruszyła do pracy.', [])).toBeNull()
   })
 })

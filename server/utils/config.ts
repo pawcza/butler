@@ -5,6 +5,8 @@ import { oidcShape, refineOidc, resolveOidc } from './oidc-config'
 const baseUrl = (name: string) =>
   z.string().url(`${name} must be a valid URL`).transform((url) => url.replace(/\/+$/, ''))
 
+const languageVoices = z.record(z.object({ model: z.string().min(1), voice: z.string().min(1) }))
+
 const schema = z.object({
   LLM_BASE_URL: baseUrl('LLM_BASE_URL').default('http://localhost:11434/v1'),
   LLM_API_KEY: z.string().optional(),
@@ -28,6 +30,26 @@ const schema = z.object({
   TTS_MODEL: z.string().min(1).default('speaches-ai/Kokoro-82M-v1.0-ONNX'),
   TTS_VOICE: z.string().min(1).default('af_heart'),
   TTS_RESPONSE_FORMAT: z.enum(['mp3', 'wav']).default('mp3'),
+  /**
+   * `1`: when a turn starts, synthesize one throwaway word in the background so an engine that
+   * unloads its model between uses has it loaded by the first sentence. Costs one tiny synthesis
+   * per turn, skipped when one finished in the last 30 seconds.
+   */
+  TTS_WARMUP: z.enum(['0', '1']).default('0').transform((value) => value === '1'),
+  /**
+   * JSON map of language code to the voice that reads it, e.g.
+   * `{"pl":{"model":"speaches-ai/piper-pl_PL-gosia-medium","voice":"gosia"}}`. A reply paragraph
+   * in one of these languages is spoken with that voice; anything else keeps the default.
+   */
+  TTS_VOICES: z.string().optional().transform((raw, ctx) => {
+    if (raw === undefined) return {}
+    try {
+      return languageVoices.parse(JSON.parse(raw))
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'TTS_VOICES must be JSON like {"pl":{"model":"…","voice":"…"}}' })
+      return z.NEVER
+    }
+  }),
   /** Inline JSON, or a path to a JSON file. See the MCP section of the README. */
   MCP_SERVERS: z.string().optional(),
   DATA_DIR: z.string().min(1).default('./data'),

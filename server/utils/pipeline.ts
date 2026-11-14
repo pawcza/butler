@@ -1,4 +1,16 @@
 import type { ConversationThread, ServerEvent } from '~/shared/types'
+import { detectLanguage } from '~/shared/text'
+import { PCM_SAMPLE_RATE } from '~/shared/audio'
+import { config } from './config'
+import { conversationStore } from './conversations'
+import { LiveTranscription } from './live-transcription'
+import { LlmAbortedError, buildMessages, respond } from './llm'
+import { createLog } from './log'
+import { mcpToolbox } from './mcp'
+import type { SessionManager } from './session'
+import { createSpeechQueue, type SpeechQueue } from './speech-queue'
+import { pcmToWav, transcribe } from './stt'
+import { synthesize, voiceFor, type TtsOptions } from './tts'
 
 const log = createLog('pipeline')
 
@@ -35,58 +47,77 @@ export function newTranscriptId(): string {
 
 type Emitter = (event: ServerEvent) => void
 
-async function speakChunk(text: string, session: SessionManager, emit: Emitter, signal: AbortSignal): Promise<void> {
-  if (!config.TTS_BASE_URL || signal.aborted) return
-  session.setState('SPEAKING')
-  try {
-    const ttsModel = session.getTtsModel()
-    const ttsVoice = session.getTtsVoice()
-    const ttsOpts: TtsOptions = {
-      ...(ttsModel !== null ? { model: ttsModel } : {}),
-      ...(ttsVoice !== null ? { voice: ttsVoice } : {}),
-    }
-    const audioBuffer = await synthesize(text, ttsOpts)
-    emit({ type: 'audio', data: audioBuffer.toString('base64'), format: config.TTS_RESPONSE_FORMAT })
-  } catch (err) {
-    emit({ type: 'error', message: `TTS failed: ${err instanceof Error ? err.message : err}` })
-  }
+/** A spoken utterance on its way in. Partials and the final transcript all carry `id`. */
+export interface Capture {
+  id: string
+  live: LiveTranscription
 }
 
-export async function processAudio(
-  audioBuffer: Buffer,
-  session: SessionManager,
-  emit: Emitter,
-): Promise<void> {
-  const t0 = Date.now()
-  session.setState('LISTENING')
+/** Opens a capture that reports partial transcripts. `onLimit` fires when it's full. */
+export function openCapture(emit: Emitter, onLimit: () => void): Capture {
+  const id = newTranscriptId()
+  const live = new LiveTranscription({
+    transcribe: (pcm, signal) => transcribe(pcmToWav(pcm, PCM_SAMPLE_RATE), signal),
+    onPartial: (text) => {
+      if (!isWhisperHallucination(text)) emit({ type: 'transcript_partial', id, text })
+    },
+    onPartialError: (err) => log.warn(`partial transcription failed: ${err instanceof Error ? err.message : err}`),
+    onLimit,
+    sampleRate: PCM_SAMPLE_RATE,
+  })
+  return { id, live }
+}
 
+/** The capture is closed: transcribe all of it, then answer it like a typed command. */
+export async function processCapture(capture: Capture, session: SessionManager, emit: Emitter): Promise<void> {
+  const t0 = Date.now()
+  if (session.isClosed) return
+  session.setState('LISTENING')
+  const discard = () => {
+    emit({ type: 'transcript_discarded', id: capture.id })
+    session.setState('IDLE')
+  }
+
+  // a socket that closes during the final pass cancels it, even though the capture left the map
+  const offClose = session.onClose(() => capture.live.cancel())
   let transcript: string
   try {
-    transcript = await transcribe(audioBuffer)
+    transcript = await capture.live.finish()
   } catch (err) {
+    if (session.isClosed) return
+    if (capture.live.cancelled) {
+      session.setState('IDLE')
+      return
+    }
     emit({ type: 'error', message: `STT failed: ${err instanceof Error ? err.message : err}` })
+    discard()
+    return
+  } finally {
+    offClose()
+  }
+  if (session.isClosed) return
+  if (capture.live.cancelled) {
     session.setState('IDLE')
     return
   }
   const sttMs = Date.now() - t0
-  log.info(`STT: ${sttMs}ms → "${transcript.trim()}"`)
-
   const trimmed = transcript.trim()
+  log.info(`STT: ${sttMs}ms after release, ${capture.live.durationMs}ms of audio → "${trimmed}"`)
 
   if (trimmed.length < 2 || trimmed.split(/\s+/).length < 2) {
     log.warn(`discarding noise transcript: "${trimmed}" (${sttMs}ms wasted)`)
-    session.setState('IDLE')
+    discard()
     return
   }
 
   if (isWhisperHallucination(trimmed)) {
     log.warn(`discarding hallucinated transcript: "${trimmed}" (${sttMs}ms wasted)`)
-    session.setState('IDLE')
+    discard()
     return
   }
 
-  emit({ type: 'transcript', id: newTranscriptId(), text: trimmed })
-  await processCommand(transcript, session, emit, t0)
+  emit({ type: 'transcript', id: capture.id, text: trimmed })
+  await processCommand(trimmed, session, emit, t0)
 }
 
 export async function processCommand(
@@ -97,6 +128,7 @@ export async function processCommand(
 ): Promise<void> {
   const t0 = startedAt ?? Date.now()
   const lap = () => Date.now() - t0
+  if (session.isClosed) return
   session.setState('THINKING')
 
   log.info(`▶ "${text}"`)
@@ -108,11 +140,13 @@ export async function processCommand(
   try {
     const selected = session.getConversationId()
     thread = selected ? await conversationStore.thread(selected) : null
+    if (session.isClosed) return
     if (thread) {
       threadId = thread.conversation.id
     } else {
       const conversation = await conversationStore.create()
       threadId = conversation.id
+      if (session.isClosed) return
       session.setConversationId(threadId)
       emit({ type: 'conversation', conversation })
     }
@@ -131,14 +165,24 @@ export async function processCommand(
   const userText = text.trim()
   const messages = buildMessages(thread?.items ?? [], userText, config.LLM_SYSTEM_PROMPT)
   const userKept = keep('user', userText)
-  const signal = session.beginTurn()
+  const turn = session.beginTurn()
+  const { signal } = turn
   const user = session.getUserId() ?? config.LLM_USER
 
   emit({ type: 'response_start' })
 
-  // Serialize TTS so audio events emit in order even though multiple chunks may synthesize
-  // concurrently. Each chunk is chained; a failed synth doesn't stop the next one.
-  let ttsChain: Promise<void> = Promise.resolve()
+  // Each message block is spoken sentence by sentence. A couple of sentences synthesize at once,
+  // but their audio goes out in order, and a failed one doesn't stop the next.
+  const speech: SpeechQueue<TtsOptions> | null = config.TTS_BASE_URL
+    ? createSpeechQueue<TtsOptions>({
+        synthesize,
+        emit,
+        format: config.TTS_RESPONSE_FORMAT,
+        signal,
+        onSpeaking: () => session.setState('SPEAKING'),
+      })
+    : null
+  if (speech) session.onStopSpeech(speech.stop)
   let spokenCount = 0
 
   let finalMessage: string
@@ -155,9 +199,11 @@ export async function processCommand(
       onBlockEnd: (blockId, full) => {
         emit({ type: 'block_end', blockId, text: full })
       },
-      onSpeakChunk: (chunk) => {
+      onSpeakChunk: (blockId, blockText) => {
         spokenCount += 1
-        ttsChain = ttsChain.catch(() => {}).then(() => speakChunk(chunk, session, emit, signal))
+        // a block in a language with its own voice is read by it, sentence after sentence
+        const language = detectLanguage(blockText, Object.keys(config.TTS_VOICES))
+        speech?.speak(blockId, blockText, voiceFor(language))
       },
     }, {
       baseUrl: config.LLM_BASE_URL,
@@ -175,22 +221,26 @@ export async function processCommand(
     await userKept
     if (err instanceof LlmAbortedError) {
       log.info('turn aborted, client disconnected')
-      session.setState('IDLE')
+      session.finishTurn(turn.id)
       return
     }
     const msg = err instanceof Error ? err.message : String(err)
     log.fail(`respond threw: ${msg}`)
     emit({ type: 'response_end', text: '' })
     emit({ type: 'error', message: `LLM failed: ${msg}` })
-    session.setState('IDLE')
+    // what was already read out may finish; the turn is over once it has
+    session.markSpeechOnly()
+    await speech?.drained()
+    session.finishTurn(turn.id)
     return
   }
+  session.markSpeechOnly()
 
   // If the model produced no message blocks at all, speak a minimal fallback so the user
   // hears *something* rather than silence after the spinner stops.
   if (spokenCount === 0) {
     const fallback = finalMessage || 'Done.'
-    ttsChain = ttsChain.catch(() => {}).then(() => speakChunk(fallback, session, emit, signal))
+    speech?.speak(null, fallback, voiceFor(detectLanguage(fallback, Object.keys(config.TTS_VOICES))))
     if (!finalMessage) finalMessage = fallback
   }
 
@@ -202,7 +252,7 @@ export async function processCommand(
   log.info(`+${lap()}ms LLM done (chunks=${spokenCount}, ${finalMessage.length}ch total)`)
 
   const ttsStart = Date.now()
-  await ttsChain.catch(() => {})
+  await speech?.drained()
   log.info(`tts drained +${Date.now() - ttsStart}ms | total +${lap()}ms`)
-  session.setState('IDLE')
+  session.finishTurn(turn.id)
 }

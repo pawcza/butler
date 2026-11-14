@@ -1,10 +1,38 @@
 import type { ClientMessage, ServerEvent } from '~/shared/types'
+import { FrameBudget, decodeAudioFrame } from '~/shared/audio'
 
 const log = createLog('ws')
 const sessions = new Map<string, SessionManager>()
+/** The open microphone capture per peer, between `audio_start` and `audio_end`. */
+const captures = new Map<string, Capture>()
+/** What size of frame each open capture may still receive. */
+const budgets = new Map<string, FrameBudget>()
 
 function send(peer: { send: (data: string) => void }, event: ServerEvent): void {
   peer.send(JSON.stringify(event))
+}
+
+/** Close a peer's capture and answer it. */
+function endCapture(peerId: string, session: SessionManager, emit: (event: ServerEvent) => void): void {
+  const capture = captures.get(peerId)
+  if (!capture) return
+  captures.delete(peerId)
+  budgets.delete(peerId)
+  processCapture(capture, session, emit).catch((err) => {
+    log.fail('processCapture threw:', err)
+    emit({ type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
+    session.setState('IDLE')
+  })
+}
+
+/** Drop a peer's capture. Returns its id, or null when none was open. */
+function dropCapture(peerId: string): string | null {
+  const capture = captures.get(peerId)
+  if (!capture) return null
+  captures.delete(peerId)
+  budgets.delete(peerId)
+  capture.live.cancel()
+  return capture.id
 }
 
 export default defineWebSocketHandler({
@@ -41,14 +69,16 @@ export default defineWebSocketHandler({
     }
 
     const raw = msg.rawData
+    // an ArrayBuffer is viewed, not copied: a frame that is too big is dropped before any copy
     const buffer = Buffer.isBuffer(raw)
       ? raw
       : raw instanceof ArrayBuffer
-        ? Buffer.from(new Uint8Array(raw))
+        ? Buffer.from(raw)
         : Buffer.from(String(raw), 'utf-8')
 
-    // Crossws delivers all frames as Buffers. Distinguish by first byte:
-    // JSON messages start with '{' (0x7b); audio is WebM (0x1a) or WAV ('R' = 0x52).
+    const emit = (event: ServerEvent) => send(peer, event)
+    // The Node adapter hands over text and binary frames alike as Buffers, without saying which.
+    // JSON messages start with '{' (0x7b); audio frames start with AUDIO_FRAME_TAG.
     if (buffer[0] === 0x7b) {
       // Text / control message
       let parsed: ClientMessage | null = null
@@ -58,29 +88,27 @@ export default defineWebSocketHandler({
         return
       }
 
+      // a capture in progress counts as busy too, so a typed command can't overlap it
+      const busy = session.getState() !== 'IDLE' || captures.has(peer.id)
+
       if (parsed.type === 'ping') {
         send(peer, { type: 'pong' })
-      } else if (parsed.type === 'set_voice') {
-        const validModel = typeof parsed.model === 'string' && parsed.model.length > 0 && parsed.model !== 'null'
-        const validVoice = typeof parsed.voice === 'string' && parsed.voice.length > 0 && parsed.voice !== 'null'
-        if (validModel && validVoice) {
-          session.setTtsPreferences(parsed.model, parsed.voice)
-          log.info(`voice set: model=${parsed.model} voice=${parsed.voice}`)
-        } else {
-          log.warn(`ignored invalid set_voice (model=${String(parsed.model)} voice=${String(parsed.voice)})`)
-        }
+      } else if (parsed.type === 'stop_speech') {
+        session.stopSpeech()
+        log.info('speech stopped by the client')
       } else if (parsed.type === 'set_conversation') {
-        if (session.getState() !== 'IDLE') {
+        if (busy) {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
           return
         }
         session.setConversationId(typeof parsed.id === 'string' && parsed.id ? parsed.id : null)
         log.info(`conversation: ${session.getConversationId() ?? 'new'}`)
       } else if (parsed.type === 'command') {
-        if (session.getState() !== 'IDLE') {
+        if (busy) {
           send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
           return
         }
+        warmUpSpeech()
         send(peer, { type: 'transcript', id: newTranscriptId(), text: parsed.text })
         log.info('text command:', JSON.stringify(parsed.text))
         processCommand(parsed.text, session, (event) => send(peer, event)).catch((err) => {
@@ -88,20 +116,49 @@ export default defineWebSocketHandler({
           send(peer, { type: 'error', message: err instanceof Error ? err.message : 'Internal error' })
           session.setState('IDLE')
         })
+      } else if (parsed.type === 'audio_start') {
+        if (!session.canCapture()) {
+          send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
+          return
+        }
+        // barge-in: only speech is left of the turn, and the user is talking over it
+        if (session.getState() !== 'IDLE') session.supersedeTurn()
+        warmUpSpeech()
+        // a capture the client left open is replaced, never merged
+        const stale = dropCapture(peer.id)
+        if (stale !== null) send(peer, { type: 'transcript_discarded', id: stale })
+        budgets.set(peer.id, new FrameBudget())
+        captures.set(peer.id, openCapture(emit, () => {
+          log.warn('capture reached its length limit, answering it')
+          endCapture(peer.id, session, emit)
+        }))
+      } else if (parsed.type === 'audio_end') {
+        endCapture(peer.id, session, emit)
+      } else if (parsed.type === 'audio_cancel') {
+        const dropped = dropCapture(peer.id)
+        if (dropped !== null) send(peer, { type: 'transcript_discarded', id: dropped })
       }
     } else {
-      // Binary audio frame
-      if (session.getState() !== 'IDLE') {
-        send(peer, { type: 'error', message: "I'm already busy. Wait until I'm done." })
+      // frames that arrive after the capture closed (release, cap) are dropped
+      const capture = captures.get(peer.id)
+      if (!capture) return
+      const verdict = budgets.get(peer.id)?.admit(buffer.length)
+      if (verdict && verdict !== 'ok') {
+        if (verdict === 'drop-first') log.warn(`dropped an oversized audio frame (${buffer.length} bytes); more of this capture are dropped silently`)
         return
       }
-      log.info(`audio received: ${(buffer.length / 1024).toFixed(1)}KB`)
-      void processAudio(buffer, session, (event) => send(peer, event))
+      const pcm = decodeAudioFrame(buffer)
+      if (!pcm) {
+        log.warn(`ignored an untagged binary frame (${buffer.length} bytes)`)
+        return
+      }
+      capture.live.push(pcm)
     }
   },
 
   close(peer) {
-    sessions.get(peer.id)?.abortTurn()
+    dropCapture(peer.id)
+    sessions.get(peer.id)?.close()
     sessions.delete(peer.id)
   },
 

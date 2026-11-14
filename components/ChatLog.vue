@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import type { LogItem } from '~/composables/useVoice'
-import { renderInlineMarkdown, truncatePreview } from '~/shared/text'
+import { renderInlineMarkdown, truncatePreview, type TextMark } from '~/shared/text'
+import type { SpeechProgress } from '~/utils/speech-player'
 
 const props = defineProps<{
   log: readonly LogItem[]
+  /** How far speech has got, to show which words are read, being read and still to come. */
+  speech: SpeechProgress | null
   canSend: boolean
 }>()
 
@@ -12,6 +15,22 @@ const emit = defineEmits<{
   (e: 'pressEnd'): void
   (e: 'send', text: string): void
 }>()
+
+/** A reply bubble's HTML. While it is spoken, each word is marked as read or as the one being read. */
+function messageHtml(item: LogItem): string {
+  const progress = props.speech
+  const spokenTo = progress?.spoken[item.id]
+  const word = progress?.word?.blockId === item.id ? progress.word : null
+  if (spokenTo === undefined && !word) return renderInlineMarkdown(item.text)
+  const marks: TextMark[] = []
+  for (const match of item.text.matchAll(/\S+/g)) {
+    const start = match.index
+    const end = start + match[0].length
+    if (word && start === word.start) marks.push({ start, end, className: 'speaking' })
+    else if (spokenTo !== undefined && end <= spokenTo) marks.push({ start, end, className: 'spoken' })
+  }
+  return renderInlineMarkdown(item.text, marks)
+}
 
 const draft = ref('')
 const textareaEl = ref<HTMLTextAreaElement | null>(null)
@@ -98,14 +117,19 @@ function onPointerCancel(): void {
               v-if="item.kind === 'user'"
               class="backdrop-blur-xl bg-white/10 border border-white/15 rounded-xl rounded-br-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.3)] max-w-[85%]"
             >
-              <p class="text-sm font-mono text-gray-100 leading-relaxed">{{ item.text }}</p>
+              <p class="text-sm font-mono text-gray-100 leading-relaxed">
+                {{ item.text }}<span
+                  v-if="item.streaming"
+                  class="inline-block w-[2px] h-[14px] bg-white/70 ml-0.5 align-middle animate-pulse"
+                />
+              </p>
             </div>
             <div
               v-else-if="item.kind === 'message'"
               class="backdrop-blur-xl bg-black/60 border border-white/10 rounded-xl rounded-bl-sm px-4 py-2.5 shadow-[0_4px_24px_rgba(0,0,0,0.5)] max-w-[85%]"
             >
               <p class="chat-md text-sm font-mono text-gray-100 leading-relaxed whitespace-pre-wrap">
-                <span v-html="renderInlineMarkdown(item.text)" /><span
+                <span v-html="messageHtml(item)" /><span
                   v-if="item.streaming"
                   class="inline-block w-[2px] h-[14px] bg-white/70 ml-0.5 align-middle animate-pulse"
                 />
@@ -166,6 +190,8 @@ function onPointerCancel(): void {
   border-radius: 2px;
 }
 
+.chat-md :deep(.spoken) { @apply text-gray-400; }
+.chat-md :deep(.speaking) { @apply bg-white/20 text-white rounded-sm; }
 .chat-md :deep(strong) { color: rgb(255 255 255 / 0.95); font-weight: 600; }
 .chat-md :deep(em) { font-style: italic; color: rgb(255 255 255 / 0.9); }
 .chat-md :deep(code) {

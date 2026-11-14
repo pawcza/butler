@@ -6,7 +6,7 @@ A self-hosted voice assistant with a living particle avatar. Bring any OpenAI-co
 
 - **Talk or type:** hold click or space to speak, say the wake word, or use the chat box.
 - **Any model:** Ollama, OpenAI or anything with a streaming `/chat/completions`.
-- **Answers out loud:** it starts speaking while the model is still writing.
+- **Answers out loud:** it starts speaking while the model is still writing, sentence by sentence, and highlights the word it is on. Stop it (button or Escape), pause it, or talk over it.
 - **Tools:** connect MCP servers and the model can use them.
 
 Built with Nuxt, Vue, TypeScript and three.js.
@@ -35,6 +35,12 @@ pnpm dev
 Open <http://localhost:3000>. For a hosted provider, change the base URL and model and add `LLM_API_KEY`.
 
 For voice, set `STT_BASE_URL` and `TTS_BASE_URL` to anything with OpenAI-style audio endpoints, such as [Speaches](https://github.com/speaches-ai/speaches). `.env.example` lists every option.
+
+Butler speaks with the voice in `TTS_MODEL` and `TTS_VOICE`, or with the one in `TTS_VOICES` for a reply in that language. Replies are synthesized one sentence at a time, so the first audio arrives early. A slow engine is fine: after 2 seconds of waiting, a "Warming up the speech model" note shows in the chat, like a tool call does. For a self-hosted engine that unloads its model when idle, set `TTS_WARMUP=1`: each turn then starts with one throwaway word of speech in the background, unless something was spoken in the last 30 seconds. The highlight follows an estimate of where each word falls in the sentence, since speech engines don't report word times.
+
+While Butler speaks, the stop button next to the status (or `Escape`) silences it at once and drops the rest of that reply's speech. The text still arrives and is saved. The pause button holds the current speech and resumes it where it stopped. Pressing to talk while Butler speaks stops it and starts listening right away. If the model is still writing, the press only stops the speech.
+
+While you speak, the browser streams your microphone to Butler, and your words appear as you talk. Butler gets them by sending the audio so far to `/audio/transcriptions` about every half second, then once more when you let go. A local speech server handles this easily. On a hosted, pay-per-request one, expect several requests for each thing you say. The microphone stays open while the page is, so words said just before you press still get through.
 
 Tool support varies by model. If replies wander, try a stronger model.
 

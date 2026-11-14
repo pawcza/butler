@@ -1,21 +1,29 @@
+import { config } from './config'
+import { createLog } from './log'
+import { createWarmup } from './tts-warmup'
+
 export interface TtsOptions {
-  model?: string
-  voice?: string
+  model: string
+  voice: string
 }
 
 const log = createLog('tts')
 
-/** "null"/empty strings can leak in from stale client-side localStorage; treat them as unset. */
-function usable(v: string | undefined): v is string {
-  return typeof v === 'string' && v.length > 0 && v !== 'null' && v !== 'undefined'
+/** The first sentence of a slow engine can take a model load: 15 to 20 seconds. */
+const SYNTH_TIMEOUT_MS = 60_000
+const WARMUP_WORD = 'Ready'
+
+/** The voice a text is read in: the one for its language when `TTS_VOICES` has one, else the default. */
+export function voiceFor(language: string | null): TtsOptions {
+  return (language !== null ? config.TTS_VOICES[language] : undefined)
+    ?? { model: config.TTS_MODEL, voice: config.TTS_VOICE }
 }
 
-export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffer> {
-  const model = usable(opts?.model) ? opts.model : config.TTS_MODEL
-  const voice = usable(opts?.voice) ? opts.voice : config.TTS_VOICE
+/** Synthesizes `text`. `signal` cancels the request; it also gives up on its own after 60s. */
+export async function synthesize(text: string, opts: TtsOptions = voiceFor(null), signal?: AbortSignal): Promise<Buffer> {
+  const { model, voice } = opts
   log.info(`synthesize: ${text.length}ch | model=${model} voice=${voice} → "${text.slice(0, 100)}"`)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 30_000)
+  const timeout = AbortSignal.timeout(SYNTH_TIMEOUT_MS)
 
   let response: Response
   try {
@@ -31,22 +39,24 @@ export async function synthesize(text: string, opts?: TtsOptions): Promise<Buffe
         voice,
         response_format: config.TTS_RESPONSE_FORMAT,
       }),
-      signal: controller.signal,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     })
-  } catch (err) {
-    clearTimeout(timeout)
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('TTS request timed out after 30s')
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '(no body)')
+      throw new Error(`TTS ${response.status}: ${errBody}`)
     }
+    const audio = Buffer.from(await response.arrayBuffer())
+    warmup.touch()
+    return audio
+  } catch (err) {
+    if (timeout.aborted && !signal?.aborted) throw new Error(`TTS request timed out after ${SYNTH_TIMEOUT_MS / 1000}s`)
     throw err
-  } finally {
-    clearTimeout(timeout)
   }
+}
 
-  if (!response.ok) {
-    const errBody = await response.text().catch(() => '(no body)')
-    throw new Error(`TTS ${response.status}: ${errBody}`)
-  }
+const warmup = createWarmup({ run: () => synthesize(WARMUP_WORD) })
 
-  return Buffer.from(await response.arrayBuffer())
+/** With `TTS_WARMUP` on, loads the speech model in the background when a turn starts. Never throws. */
+export function warmUpSpeech(): void {
+  if (config.TTS_WARMUP && config.TTS_BASE_URL) warmup.fire()
 }

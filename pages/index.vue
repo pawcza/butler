@@ -11,21 +11,22 @@ const {
   openConversation,
   forgetConversation,
   sendCommand,
-  startRecording,
-  stopRecording,
+  startTalking,
+  stopTalking,
   isProcessingWake,
+  isWakeListening,
   audioEnergy,
-  availableModels,
-  selectedModel,
-  selectedVoice,
-  setVoice,
+  isSpeaking,
+  isPlaying,
+  isStreaming,
+  isPaused,
+  speechProgress,
+  stopSpeaking,
+  pauseSpeaking,
+  resumeSpeaking,
   volume,
   setVolume,
 } = useVoice()
-
-function onVoiceChange(payload: { model: string; voice: string }): void {
-  setVoice(payload.model, payload.voice)
-}
 
 const isRecording = ref(false)
 const isFullscreen = ref(false)
@@ -54,20 +55,30 @@ let pressStartedAt = 0
 
 // Virtual display state — resolves local recording into display states.
 // Server LISTENING = transcribing audio (processing phase) → show as THINKING.
-// Local isRecording = actively capturing mic via button → show as LISTENING.
+// Local isRecording = actively capturing mic via button → show as LISTENING, and so is the
+// window that a bare wake word opens. Pressing over speech starts a capture while the server still says SPEAKING.
 const activeState = computed(() => {
+  if (isWakeListening.value) return 'LISTENING'
   if (isProcessingWake.value) return 'THINKING'
-  if (isRecording.value && state.value === 'IDLE') return 'LISTENING'
+  if (isRecording.value && (state.value === 'IDLE' || state.value === 'SPEAKING')) return 'LISTENING'
   if (state.value === 'LISTENING') return 'THINKING'
   if (state.value === 'EXECUTING') return 'THINKING'
   return state.value
 })
 
 function beginSpeaking(): void {
-  if (!canInteract.value) return
+  if (!isConnected.value) return
+  if (isSpeaking.value) {
+    // Barge-in: talking over butler silences it. While the model is still writing, the press
+    // goes no further, since a capture is only accepted once only speech is left.
+    stopSpeaking()
+    if (isStreaming.value) return
+  } else if (!canInteract.value) {
+    return
+  }
   pressStartedAt = Date.now()
   isRecording.value = true
-  void startRecording()
+  void startTalking()
 }
 
 function onPressStart(e: Event): void {
@@ -83,13 +94,17 @@ function onPressEnd(): void {
   isRecording.value = false
   if (Date.now() - pressStartedAt < MIN_HOLD_MS) {
     // Too short — discard without sending
-    stopRecording(true)
+    stopTalking(true)
     return
   }
-  stopRecording()
+  stopTalking()
 }
 
 function handleKeyDown(e: KeyboardEvent): void {
+  if (e.code === 'Escape' && isSpeaking.value) {
+    stopSpeaking()
+    return
+  }
   if (
     document.activeElement?.tagName === 'INPUT' ||
     document.activeElement?.tagName === 'TEXTAREA'
@@ -111,12 +126,15 @@ onUnmounted(() => {
   window.removeEventListener('keyup', handleKeyUp)
 })
 
-const stateLabel: Record<string, string> = {
-  IDLE: 'Hold click or space to speak',
-  LISTENING: 'Listening\u2026',
-  THINKING: 'Processing\u2026',
-  SPEAKING: 'Speaking\u2026',
-}
+const stateLabel = computed(() => {
+  if (activeState.value === 'SPEAKING' && isPaused.value) return 'Paused'
+  return ({
+    IDLE: 'Hold click or space to speak',
+    LISTENING: 'Listening\u2026',
+    THINKING: 'Processing\u2026',
+    SPEAKING: 'Speaking\u2026',
+  } as Record<string, string>)[activeState.value] ?? activeState.value
+})
 
 const stateLabelClass = computed(() => {
   switch (activeState.value) {
@@ -201,14 +219,6 @@ watch(activeState, async () => {
             :volume="volume"
             @update:volume="setVolume"
           />
-          <VoiceSelector
-            v-if="availableModels.length > 0"
-            class="pointer-events-auto"
-            :models="availableModels"
-            :selected-model="selectedModel"
-            :selected-voice="selectedVoice"
-            @update:voice="onVoiceChange"
-          />
           <button
             class="pointer-events-auto text-white/50 hover:text-white transition-colors duration-200 p-2 min-h-[36px] min-w-[36px] flex items-center justify-center rounded-full hover:bg-white/5"
             aria-label="Toggle fullscreen"
@@ -232,17 +242,40 @@ watch(activeState, async () => {
 
       <!-- Middle — transparent, shows 3D scene. State label centered. -->
       <div class="flex-1 flex items-end justify-center pb-4 safe-area-bottom">
-        <span
-          ref="stateLabelEl"
-          class="text-[11px] sm:text-[9px] font-mono tracking-[0.2em] uppercase backdrop-blur-md bg-black/30 px-4 py-1.5 sm:px-3 sm:py-1 rounded-full flex items-center gap-1.5"
-          :class="stateLabelClass"
-        >
-          {{ stateLabel[activeState] ?? activeState }}
+        <div class="flex items-center gap-2">
           <span
-            v-if="activeState === 'THINKING'"
-            class="inline-block w-1.5 h-1.5 rounded-full animate-pulse bg-amber-100/70"
-          />
-        </span>
+            ref="stateLabelEl"
+            class="text-[11px] sm:text-[9px] font-mono tracking-[0.2em] uppercase backdrop-blur-md bg-black/30 px-4 py-1.5 sm:px-3 sm:py-1 rounded-full flex items-center gap-1.5"
+            :class="stateLabelClass"
+          >
+            {{ stateLabel }}
+            <span
+              v-if="activeState === 'THINKING'"
+              class="inline-block w-1.5 h-1.5 rounded-full animate-pulse bg-amber-100/70"
+            />
+          </span>
+          <!-- Speech controls: shown whenever butler is speaking or has speech on its way. Escape stops too. -->
+          <template v-if="isSpeaking">
+            <button
+              v-if="isPlaying"
+              class="pointer-events-auto backdrop-blur-md bg-black/30 text-orange-100/80 hover:text-white hover:bg-white/10 transition-colors duration-200 w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center rounded-full"
+              :aria-label="isPaused ? 'Resume speech' : 'Pause speech'"
+              :title="isPaused ? 'Resume speech' : 'Pause speech'"
+              @click="isPaused ? resumeSpeaking() : pauseSpeaking()"
+            >
+              <svg v-if="!isPaused" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+              <svg v-else xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>
+            </button>
+            <button
+              class="pointer-events-auto backdrop-blur-md bg-black/30 text-orange-100/80 hover:text-white hover:bg-white/10 transition-colors duration-200 w-9 h-9 sm:w-8 sm:h-8 flex items-center justify-center rounded-full"
+              aria-label="Stop speaking (Escape)"
+              title="Stop speaking (Escape)"
+              @click="stopSpeaking()"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+            </button>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -251,6 +284,7 @@ watch(activeState, async () => {
     <ClientOnly>
       <ChatLog
         :log="chatLog"
+        :speech="speechProgress"
         :can-send="canInteract"
         @press-start="beginSpeaking"
         @press-end="onPressEnd"

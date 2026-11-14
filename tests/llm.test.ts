@@ -18,7 +18,7 @@ function recorder() {
     onBlockStart: (id, kind, meta) => { events.push(`start ${id} ${kind}${meta.tool ? ` ${meta.tool}` : ''}`) },
     onBlockDelta: (id, text) => { events.push(`delta ${id} ${text}`) },
     onBlockEnd: (id, text) => { events.push(`end ${id} ${text}`) },
-    onSpeakChunk: (text) => { events.push(`speak ${text}`) },
+    onSpeakChunk: (_blockId, text) => { events.push(`speak ${text}`) },
   }
   return { events, handlers, spoken: () => events.filter((e) => e.startsWith('speak ')).map((e) => e.slice(6)) }
 }

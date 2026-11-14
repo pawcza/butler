@@ -35,7 +35,12 @@ export interface ConversationThread {
 // WebSocket events: server -> client
 export type ServerEvent =
   | { type: 'state'; state: SessionState }
+  /** What has been heard so far of the utterance still being spoken. Replaced by later partials. */
+  | { type: 'transcript_partial'; id: string; text: string }
+  /** The final transcript. For a spoken utterance it has the same id as its partials. */
   | { type: 'transcript'; id: string; text: string }
+  /** The utterance was dropped (noise, hallucination, failed or cancelled): remove its partial. */
+  | { type: 'transcript_discarded'; id: string }
   /** Full final assistant text — pushed once at the end of a response, used for exchange history. */
   | { type: 'response'; text: string }
   /** Start of a new response (one user turn can emit many blocks). */
@@ -48,23 +53,32 @@ export type ServerEvent =
   | { type: 'block_end'; blockId: string; text: string }
   /** Response finished. `text` is the final spoken message body (empty if the model returned no message). */
   | { type: 'response_end'; text: string }
-  /** data is a base64-encoded audio buffer; decode with atob() on the client */
-  | { type: 'audio'; data: string; format: 'mp3' | 'wav' }
+  /**
+   * One spoken sentence. `data` is a base64-encoded audio buffer; decode with atob() on the client.
+   * `block` says which message block it reads and which characters of that block's text, for the
+   * highlight. Speech that belongs to no block (a spoken fallback) has none. Events arrive in order.
+   */
+  | { type: 'audio'; data: string; format: 'mp3' | 'wav'; block?: { id: string; start: number; end: number } }
   | { type: 'error'; message: string }
   | { type: 'pong' }
   /** A fresh thread was opened for this session's first message. */
   | { type: 'conversation'; conversation: ConversationSummary }
 
-// TTS model info returned by /api/tts/voices
-export interface TtsModelInfo {
-  id: string
-  voices: readonly string[]
-}
-
-// WebSocket messages: client -> server (text frames only)
+// WebSocket messages: client -> server, as JSON. Microphone audio goes between `audio_start` and
+// `audio_end` as binary frames tagged with AUDIO_FRAME_TAG (see shared/audio.ts).
 export type ClientMessage =
   | { type: 'ping' }
   | { type: 'command'; text: string }
-  | { type: 'set_voice'; model: string; voice: string }
+  /** Open a capture. Accepted while the session is IDLE, or when only speech is left of the turn (barge-in). */
+  | { type: 'audio_start' }
+  /** Close the capture and answer what was said. */
+  | { type: 'audio_end' }
+  /** Close the capture and drop it. */
+  | { type: 'audio_cancel' }
+  /**
+   * Drop the rest of this turn's speech: pending and in-flight synthesis is aborted. The reply text
+   * keeps streaming and is stored as usual.
+   */
+  | { type: 'stop_speech' }
   /** Continue an existing thread, or `null` to start clean (the default for every new session). */
   | { type: 'set_conversation'; id: string | null }

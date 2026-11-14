@@ -60,8 +60,8 @@ export const toolCallFrames = (name: string, args: string, id = 'call_1'): Frame
 }
 
 const DEMO_REPLY = [
-  'Good evening. Everything is running smoothly.',
-  'I answer in short paragraphs, and each one is spoken as soon as it is complete.',
+  'Good evening. Everything is running smoothly, and the house is quiet. I have nothing urgent to report.',
+  'I answer in short paragraphs. Each sentence is spoken as soon as it is ready, so you hear the start while the rest is still being made. Say stop at any time.',
 ]
 
 function demoResponse(body: Record<string, unknown>): ScriptedResponse {
@@ -150,9 +150,6 @@ export async function startMockOpenAI(port = 0): Promise<MockOpenAI> {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ text: '' }))
       })
-    } else if (req.method === 'GET' && path === '/v1/models') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ data: [{ id: 'mock-tts', task: 'text-to-speech', voices: ['mock-voice'] }] }))
     } else {
       res.writeHead(404).end()
     }
