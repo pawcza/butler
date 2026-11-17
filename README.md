@@ -2,7 +2,9 @@
 
 A self-hosted voice assistant with a living particle avatar. Bring any OpenAI-compatible model and talk to it in your browser.
 
-![Short recording: the avatar condenses into a cube while thinking, then an alpha while speaking](docs/demo.gif)
+![Butler responds to a message while its particle avatar animates](docs/demo.gif)
+
+[View a screenshot](docs/screenshot.png). The conversation shown uses the local mock server.
 
 - **Talk or type:** hold click or space to speak, say the wake word, or use the chat box.
 - **Any model:** Ollama, OpenAI or anything with a streaming `/chat/completions`.
@@ -10,6 +12,16 @@ A self-hosted voice assistant with a living particle avatar. Bring any OpenAI-co
 - **Tools:** connect MCP servers and the model can use them.
 
 Built with Nuxt, Vue, TypeScript and three.js.
+
+## How it works
+
+- **A streaming voice pipeline:** the browser sends microphone audio over WebSocket. The server transcribes it, streams a model response and queues sentences for speech as they become available.
+- **Interruptible by design:** a new utterance can stop playback and cancel a response in progress, including a pending tool call. Text already received remains in the conversation.
+- **An animated interface:** a three.js particle avatar changes shape with the assistant's state; the chat highlights an estimate of the words being spoken.
+- **Open integrations:** the model and optional speech services use OpenAI-compatible endpoints. MCP servers can supply tools over stdio or HTTP.
+- **Testable boundaries:** speech and transcription components accept injected engines, and the tests use a scripted OpenAI-compatible server and an MCP fixture instead of real model calls.
+
+The frontend and backend live in one Nuxt project. Nitro handles the API and WebSocket, while conversation threads are stored as local JSON files.
 
 ## Run it
 
@@ -31,6 +43,8 @@ LLM_MODEL=qwen2.5:7b
 ```bash
 pnpm dev
 ```
+
+For development, `pnpm type-check` checks the project and `pnpm test` runs the tests. `pnpm mock` starts a scripted OpenAI-compatible server for local development.
 
 Open <http://localhost:3000>. For a hosted provider, change the base URL and model and add `LLM_API_KEY`.
 
